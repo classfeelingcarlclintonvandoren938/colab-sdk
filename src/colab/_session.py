@@ -4,10 +4,10 @@ Thin wrapper around the official Google Colab CLI. This is the **only**
 component that communicates with Google.
 """
 
-import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -55,7 +55,12 @@ class ColabSession:
     """
 
     def __init__(self) -> None:
-        """Verify that ``google-colab-cli`` is installed (fail-fast)."""
+        """Verify that ``google-colab-cli`` is available (fail-fast)."""
+        if sys.platform == "win32":
+            raise SessionError(
+                "google-colab-cli does not run on native Windows. "
+                "Use WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
+            )
         if shutil.which("colab") is None:
             raise SessionError(
                 "google-colab-cli is not installed. "
@@ -105,7 +110,7 @@ class ColabSession:
             A ``SessionStatus`` with the current session state.
         """
         result = subprocess.run(
-            ["colab", "status", "-s", name, "--json"],
+            ["colab", "status", "-s", name],
             capture_output=True,
             text=True,
             timeout=30,
@@ -115,24 +120,9 @@ class ColabSession:
             # Session is dead or doesn't exist
             return SessionStatus(alive=False, name=name, gpu="")
 
-        # Try to parse JSON output for metadata
-        try:
-            data = json.loads(result.stdout)
-            created: datetime | None = None
-            if "created_at" in data and data["created_at"]:
-                try:
-                    created = datetime.fromisoformat(data["created_at"])
-                except (ValueError, TypeError):
-                    pass
-            return SessionStatus(
-                alive=True,
-                name=name,
-                gpu=data.get("gpu", ""),
-                created_at=created,
-            )
-        except (json.JSONDecodeError, KeyError):
-            # Fall back to basic alive status
-            return SessionStatus(alive=True, name=name, gpu="")
+        # Session is alive. The CLI outputs human-readable text;
+        # we return basic status without parsing GPU info for now.
+        return SessionStatus(alive=True, name=name, gpu="")
 
     # ------------------------------------------------------------------
     # Composite operations (used by Engine)
@@ -186,16 +176,15 @@ class ColabSession:
         marker_path = f"/content/.colab-client/hashes/{requirements_hash}"
 
         # Probe whether the marker file already exists on the VM
+        # by piping a short Python script via stdin.
         probe_script = (
-            f"import os; "
-            f"exit(0) if os.path.exists('{marker_path}') else exit(1)"
+            f"import os\n"
+            f"exit(0) if os.path.exists('{marker_path}') else exit(1)\n"
         )
-        probe_cmd = [
-            "colab", "exec", "-s", name,
-            "-c", probe_script,
-        ]
+        probe_cmd = ["colab", "exec", "-s", name]
         probe_result = subprocess.run(
             probe_cmd,
+            input=probe_script,
             capture_output=True,
             text=True,
             timeout=60,

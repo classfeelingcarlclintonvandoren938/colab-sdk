@@ -51,7 +51,9 @@ class Analyzer:
         self._root = project_root.resolve()
         self._visited: set[Path] = set()
         self._warnings: list[str] = []
-        self._sys_path_added = False
+        # Track module names confirmed as external during resolution
+        # so _extract_packages does not re-run find_spec.
+        self._external_imports: set[str] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -74,26 +76,29 @@ class Analyzer:
         """
         self._visited.clear()
         self._warnings.clear()
+        self._external_imports.clear()
 
-        # Ensure project root is on sys.path so importlib.util.find_spec()
-        # can resolve local modules even in src/ layout projects.
+        # Temporarily add the project root to sys.path so that
+        # importlib.util.find_spec() can resolve local modules even
+        # in src/ layout projects. Restore on exit.
         root_str = str(self._root)
-        if root_str not in sys.path:
+        added = root_str not in sys.path
+        if added:
             sys.path.insert(0, root_str)
-            self._sys_path_added = True
-        elif not self._sys_path_added:
-            # Already present — still mark so __del__ doesn't remove it
-            self._sys_path_added = False
 
-        source = source_file.resolve()
+        try:
+            source = source_file.resolve()
 
-        if not source.exists():
-            raise AnalysisError(f"Source file not found: {source}")
-        if source.suffix != ".py":
-            raise AnalysisError(f"Expected a .py file, got: {source}")
+            if not source.exists():
+                raise AnalysisError(f"Source file not found: {source}")
+            if source.suffix != ".py":
+                raise AnalysisError(f"Expected a .py file, got: {source}")
 
-        files = self._resolve_recursive(source)
-        requirements = self._extract_packages(files)
+            files = self._resolve_recursive(source)
+            requirements = sorted(self._external_imports)
+        finally:
+            if added:
+                sys.path.remove(root_str)
 
         return ExecutionManifest(
             function_name=function_name,
@@ -132,11 +137,18 @@ class Analyzer:
             resolved = self._resolve_absolute_local(module)
             if resolved is not None:
                 collected.extend(self._resolve_recursive(resolved))
+            else:
+                top = module.split(".", 1)[0]
+                if top not in _STDLIB_MODULES:
+                    self._external_imports.add(top)
 
         # --- Wildcard imports -------------------------------------------
         for module in imports["wildcard"]:
             resolved = self._resolve_package_dir(module)
             if resolved is None:
+                top = module.split(".", 1)[0]
+                if top not in _STDLIB_MODULES:
+                    self._external_imports.add(top)
                 continue
 
             if resolved.name == "__init__.py":
@@ -215,30 +227,6 @@ class Analyzer:
             return None
 
         return origin
-
-    # ------------------------------------------------------------------
-    # Requirements extraction
-    # ------------------------------------------------------------------
-
-    def _extract_packages(self, files: list[Path]) -> list[str]:
-        """Collect external package names from all analysed files."""
-        packages: set[str] = set()
-
-        for file in files:
-            imports = _parse_imports(file)
-
-            for module in imports["absolute"]:
-                top = module.split(".", 1)[0]
-                if top not in _STDLIB_MODULES and self._resolve_absolute_local(module) is None:
-                    packages.add(top)
-
-            for module in imports["wildcard"]:
-                top = module.split(".", 1)[0]
-                if top not in _STDLIB_MODULES and self._resolve_package_dir(module) is None:
-                    packages.add(top)
-
-        return sorted(packages)
-
 
 # ======================================================================
 # Module-level helpers
