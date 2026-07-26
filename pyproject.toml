@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colab-client"
+version = "0.1.0"
+description = "A Python SDK that turns Google Colab into a remote compute runtime."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Colab Client Contributors"},
+]
+
+dependencies = [
+    "google-colab-cli",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colab"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[project.urls]
+Homepage = "https://github.com/colab-client/colab-client"
+Source = "https://github.com/colab-client/colab-client"

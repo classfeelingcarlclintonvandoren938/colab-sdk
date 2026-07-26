@@ -1,0 +1,149 @@
+# Stdout Protocol
+
+> The structured output protocol for communication between the Colab VM runtime (`runner.py`) and the SDK (`ExecutionEngine`).
+
+---
+
+## Produced By
+
+`runner.py` (runs inside the artifact on the Colab VM)
+
+## Consumed By
+
+`ExecutionEngine.parse_result(stdout_lines)` via `ColabSession.execute()`
+
+---
+
+## Overview
+
+When `runner.py` executes on the Colab VM, it writes structured messages to stdout and stderr. The SDK captures these messages in real-time via `colab exec` and parses them to provide logs, progress updates, final results, and error information to the caller.
+
+All structured messages use a **prefix-based protocol**:
+
+```
+__LAZY_<TYPE>:<payload>
+```
+
+The `:` separator is a colon. The payload is everything after the first colon.
+
+---
+
+## Message Types
+
+### `__LAZY_LOG__`
+
+General-purpose log messages. Forwarded to the user's console.
+
+```
+__LAZY_LOG__:Starting training with batch_size=32
+__LAZY_LOG__:Epoch 1/10 complete
+```
+
+The payload is a free-form string. No structured parsing is applied beyond extraction.
+
+---
+
+### `__LAZY_PROGRESS__`
+
+Progress indicator. A numeric value between 0 and 100.
+
+```
+__LAZY_PROGRESS__:0
+__LAZY_PROGRESS__:25
+__LAZY_PROGRESS__:50
+__LAZY_PROGRESS__:75
+__LAZY_PROGRESS__:100
+```
+
+The payload must be parseable as an integer or float. Values outside 0-100 are clamped.
+
+---
+
+### `__LAZY_RESULT__`
+
+**Exactly one** of these must be emitted per successful execution. Contains the serialized return value.
+
+```
+__LAZY_RESULT__:{"status": "ok", "value": 42}
+__LAZY_RESULT__:{"status": "ok", "value": {"accuracy": 0.95, "loss": 0.05}}
+```
+
+The payload is JSON. The top-level structure must be:
+
+```json
+{
+    "status": "ok",
+    "value": <any-json-value>
+}
+```
+
+`<any-json-value>` is the JSON-serialized return value of the user's function. It can be any valid JSON type (null, number, string, array, object).
+
+**Limitations:** Only JSON-serializable values can be returned. Complex Python objects (custom classes, generators, file handles) must be serialized by the user or the function must return a JSON-compatible type.
+
+---
+
+### `__LAZY_ERROR__`
+
+Emitted when the function raises an exception. Contains the error details.
+
+```
+__LAZY_ERROR__:{"status": "error", "type": "ValueError", "message": "Invalid batch size", "traceback": ["Traceback (most recent call last):\n", "  File \"runner.py\", line 42, in <module>\n", "    result = train()\n", "  File \"files/training/trainer.py\", line 10, in train\n", "    raise ValueError(\"Invalid batch size\")\n"]}
+```
+
+The payload is JSON:
+
+```json
+{
+    "status": "error",
+    "type": "<exception-type-name>",
+    "message": "<exception-message>",
+    "traceback": ["<traceback-line-1>", "<traceback-line-2>", "..."]
+}
+```
+
+When the SDK receives `__LAZY_ERROR__`, it raises a `RemoteExecutionError` locally with the original exception type, message, and full traceback.
+
+---
+
+## Protocol Rules
+
+1. **Only one `__LAZY_RESULT__` or `__LAZY_ERROR__`** should be emitted per execution. If both are emitted, the first one wins, and the second is logged as a warning.
+2. **`__LAZY_LOG__` and `__LAZY_PROGRESS__`** can be emitted any number of times, in any order, interleaved with other messages.
+3. **Non-prefixed lines** are treated as pass-through stdout and forwarded to the user's console without structured parsing.
+4. **Stderr lines without `__LAZY_ERROR__`** are treated as pass-through stderr and forwarded to the user's console.
+5. **The runner must flush stdout/stderr** after each message to ensure real-time streaming.
+
+---
+
+## runner.py Implementation Sketch
+
+```python
+import json, sys, traceback
+
+def emit_log(msg):
+    print(f"__LAZY_LOG__:{msg}", flush=True)
+
+def emit_progress(value):
+    print(f"__LAZY_PROGRESS__:{value}", flush=True)
+
+def emit_result(value):
+    payload = json.dumps({"status": "ok", "value": value})
+    print(f"__LAZY_RESULT__:{payload}", flush=True)
+
+def emit_error(exc):
+    tb = traceback.format_exc().splitlines(keepends=True)
+    payload = json.dumps({
+        "status": "error",
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": tb
+    })
+    print(f"__LAZY_ERROR__:{payload}", file=sys.stderr, flush=True)
+```
+
+---
+
+## Versioning
+
+The protocol version is implicit in the marker prefix (`__LAZY_`). If the protocol changes, the prefix changes (e.g., `__LAZY_V2_`). The SDK should reject unrecognized prefixes with a warning.
