@@ -90,7 +90,7 @@ class ColabSession:
                 else ""
             )
             raise SessionError(
-                "google-colab-cli is not installed."
+                "google-colab-cli is not installed. "
                 "Run: pip install google-colab-cli"
                 f"{hint}"
             )
