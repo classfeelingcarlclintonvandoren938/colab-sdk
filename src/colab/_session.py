@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from colab._exceptions import SessionDeadError, SessionError
 
 __all__ = [
@@ -55,16 +57,42 @@ class ColabSession:
     """
 
     def __init__(self) -> None:
-        """Verify that ``google-colab-cli`` is available (fail-fast)."""
+        """Verify that ``google-colab-cli`` is available (fail-fast).
+
+        Loads ``.env`` from the current directory if present, so users
+        can set ``COLAB_BIN_DIR`` for non-standard install locations
+        (e.g. ``/home/user/.local/bin`` inside WSL).
+        """
         if sys.platform == "win32":
             raise SessionError(
                 "google-colab-cli does not run on native Windows. "
                 "Use WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
             )
-        if shutil.which("colab") is None:
+
+        load_dotenv()
+        colab_bin_dir = os.environ.get("COLAB_BIN_DIR")
+
+        # Build a subprocess environment with the extra PATH if configured
+        self._env: dict[str, str] | None = None
+        if colab_bin_dir:
+            self._env = os.environ.copy()
+            self._env["PATH"] = f"{colab_bin_dir}:{self._env['PATH']}"
+
+        # Check CLI availability — use custom PATH if set
+        colab_path = shutil.which(
+            "colab",
+            path=self._env.get("PATH") if self._env else None,
+        )
+        if colab_path is None:
+            hint = (
+                f" Try setting COLAB_BIN_DIR={colab_bin_dir} in your .env file."
+                if colab_bin_dir
+                else ""
+            )
             raise SessionError(
-                "google-colab-cli is not installed. "
+                "google-colab-cli is not installed."
                 "Run: pip install google-colab-cli"
+                f"{hint}"
             )
 
     # ------------------------------------------------------------------
@@ -114,6 +142,7 @@ class ColabSession:
             capture_output=True,
             text=True,
             timeout=30,
+            env=self._env,
         )
 
         if result.returncode != 0:
@@ -188,6 +217,7 @@ class ColabSession:
             capture_output=True,
             text=True,
             timeout=60,
+            env=self._env,
         )
 
         if probe_result.returncode == 0:
@@ -295,6 +325,7 @@ class ColabSession:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                env=self._env,
             ) as proc:
                 # Yield stdout lines in real-time
                 if proc.stdout:
@@ -358,8 +389,7 @@ class ColabSession:
     # Internal
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
         """Run a CLI command and raise on failure."""
         try:
             result = subprocess.run(
@@ -367,6 +397,7 @@ class ColabSession:
                 capture_output=True,
                 text=True,
                 timeout=300,
+                env=self._env,
             )
         except FileNotFoundError:
             raise SessionError(
