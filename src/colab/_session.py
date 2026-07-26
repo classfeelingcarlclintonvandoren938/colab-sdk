@@ -204,25 +204,33 @@ class ColabSession:
 
         marker_path = f"/content/.colab-client/hashes/{requirements_hash}"
 
-        # Probe whether the marker file already exists on the VM
-        # by piping a short Python script via stdin.
+        # Probe whether the marker file already exists on the VM.
+        # colab exec only supports -f (file), so write the probe to a
+        # temporary local file first.
         probe_script = (
             f"import os\n"
             f"exit(0) if os.path.exists('{marker_path}') else exit(1)\n"
         )
-        probe_cmd = ["colab", "exec", "-s", name]
-        probe_result = subprocess.run(
-            probe_cmd,
-            input=probe_script,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=self._env,
+        tmp_probe = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False
         )
+        try:
+            tmp_probe.write(probe_script)
+            tmp_probe.close()
 
-        if probe_result.returncode == 0:
-            # Hash is already cached — skip installation
-            return
+            probe_result = subprocess.run(
+                ["colab", "exec", "-s", name, "-f", tmp_probe.name],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=self._env,
+            )
+
+            if probe_result.returncode == 0:
+                # Hash is already cached — skip installation
+                return
+        finally:
+            os.unlink(tmp_probe.name)
 
         # Install packages
         self.install(name, *packages)
