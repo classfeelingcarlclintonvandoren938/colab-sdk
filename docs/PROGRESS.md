@@ -78,8 +78,8 @@
 2. ✅ `ExecutionManifest` model (frozen dataclass)
 2b. ✅ `_exceptions.py` — custom exception hierarchy (ColabClientError base + 9 specific types)
 3. ✅ `Analyzer` component (AST-based import resolution)
-4. `Packager` component (runner.py generation, tar.gz)
-5. `ColabSession` component (CLI wrapper)
+4. ✅ `Packager` component (runner.py + deterministic tar.gz artifact)
+5. ✅ `ColabSession` component (google-colab-cli wrapper via subprocess)
 6. `ExecutionEngine` component (pipeline orchestration)
 7. `App` + `RemoteFunction` (SDK entry point, decorator)
 8. Unit tests for each component
