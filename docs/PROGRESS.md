@@ -77,7 +77,7 @@
 1. ✅ Project setup: `pyproject.toml`, `src/colab/`, `tests/`
 2. ✅ `ExecutionManifest` model (frozen dataclass)
 2b. ✅ `_exceptions.py` — custom exception hierarchy (ColabClientError base + 9 specific types)
-3. `Analyzer` component (AST parsing, import resolution)
+3. ✅ `Analyzer` component (AST-based import resolution)
 4. `Packager` component (runner.py generation, tar.gz)
 5. `ColabSession` component (CLI wrapper)
 6. `ExecutionEngine` component (pipeline orchestration)
