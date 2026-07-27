@@ -29,7 +29,6 @@ jobs:
       - name: Install dependencies
         run: |
           uv pip install --system -e ".[dev]"
-          uv pip install --system google-colab-cli>=0.6,<0.7
 
       - name: Lint with ruff
         run: uv run ruff check src/ tests/
