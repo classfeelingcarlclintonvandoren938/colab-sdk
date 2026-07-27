@@ -426,7 +426,7 @@ class ColabSession:
         )
         yield from self._exec(cmd)
 
-    def run_code(self, name: str, code: str) -> Generator[str, None, None]:
+    def run_code(self, name: str, code: str, *, timeout: int | None = None) -> Generator[str, None, None]:
         """Execute Python *code* directly on the Colab VM via stdin.
 
         Unlike ``execute()`` (which reads a local file via ``-f``),
@@ -435,20 +435,24 @@ class ColabSession:
         Args:
             name: Session name.
             code: Python source code to execute.
+            timeout: Maximum seconds to wait for execution.  ``None``
+                means no timeout (the process may hang indefinitely).
 
         Yields:
             Lines of stdout from the remote execution.
 
         Raises:
-            SessionError: If execution fails or the session is dead.
+            SessionError: If execution fails, the session is dead, or
+                the timeout expires.
         """
         cmd = self._build_cmd(["colab", "exec", "-s", name])
-        yield from self._exec(cmd, stdin_data=code)
+        yield from self._exec(cmd, stdin_data=code, timeout=timeout)
 
     def _exec(
         self,
         cmd: list[str],
         stdin_data: str | None = None,
+        timeout: int | None = None,
     ) -> Generator[str, None, None]:
         """Shared subprocess helper for remote execution.
 
@@ -456,12 +460,14 @@ class ColabSession:
             cmd: The ``colab exec`` command list (already processed by
                 ``_build_cmd`` on Windows).
             stdin_data: Optional code to send via stdin.
+            timeout: Maximum seconds to wait for the process.
+                ``None`` means no timeout (process may hang indefinitely).
 
         Yields:
             Lines of stdout from the remote execution.
 
         Raises:
-            SessionError: On failure or missing CLI.
+            SessionError: On failure, missing CLI, or timeout expiry.
         """
         try:
             with subprocess.Popen(
@@ -481,7 +487,7 @@ class ColabSession:
                     for line in proc.stdout:
                         yield line.rstrip("\n")
 
-                returncode = proc.wait()
+                returncode = proc.wait(timeout=timeout)
 
                 stderr_output = ""
                 if proc.stderr:
@@ -491,6 +497,10 @@ class ColabSession:
                     raise SessionError(
                         f"Execution failed (exit code {returncode}):\n{stderr_output}"
                     )
+        except subprocess.TimeoutExpired:
+            raise SessionError(
+                f"Execution timed out after {timeout} seconds."
+            ) from None
         except FileNotFoundError:
             msg = (
                 "WSL is not available."

@@ -87,6 +87,7 @@ class RemoteFunction:
         self,
         *args: object,
         debug: bool = False,
+        timeout: int | None = None,
         **kwargs: object,
     ) -> Any:
         """Execute the function remotely on a Colab VM.
@@ -95,6 +96,10 @@ class RemoteFunction:
             *args: Positional arguments forwarded to the remote function.
             debug: If ``True``, print every raw line from the VM to stderr
                 for debugging purposes.
+            timeout: Maximum seconds to wait for the remote execution.
+                ``None`` means no timeout (the process may hang
+                indefinitely).  When set via ``@app.function(timeout=...)``
+                the decorator-level value is the default.
             **kwargs: Keyword arguments forwarded to the remote function.
 
         Returns:
@@ -118,4 +123,5 @@ class RemoteFunction:
             args=args,
             kwargs=kwargs,
             debug=debug,
+            timeout=timeout,
         )

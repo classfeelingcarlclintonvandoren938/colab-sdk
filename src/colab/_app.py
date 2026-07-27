@@ -310,6 +310,7 @@ class App:
         kwargs: dict[str, object],
         *,
         debug: bool = False,
+        timeout: int | None = None,
     ) -> Any:
         """Execute a ``RemoteFunction`` via the engine.
 
@@ -321,6 +322,7 @@ class App:
             args: Positional arguments for the remote function.
             kwargs: Keyword arguments for the remote function.
             debug: If ``True``, print raw VM output for debugging.
+            timeout: Maximum seconds to wait for remote execution.
 
         Returns:
             The deserialised return value.
@@ -334,4 +336,5 @@ class App:
             session_name=self._session_name,
             gpu=function.gpu or self._gpu,
             debug=debug,
+            timeout=timeout or function.timeout,
         )

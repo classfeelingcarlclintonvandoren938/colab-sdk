@@ -98,6 +98,7 @@ class ExecutionEngine:
         session_name: str = "default",
         gpu: str | None = None,
         debug: bool = False,
+        timeout: int | None = None,
     ) -> Any:
         """Execute a function remotely on a Colab VM.
 
@@ -116,6 +117,9 @@ class ExecutionEngine:
             gpu: GPU type (``\\\"T4\\\"``, ``\\\"L4\\\"``, ``\\\"A100\\\"``, ``\\\"H100\\\"``,
                 or ``None`` for CPU).
             debug: If ``True``, print all raw VM output to stderr.
+            timeout: Maximum seconds to wait for remote execution.
+                ``None`` means no timeout (the process may hang
+                indefinitely).
 
         Returns:
             The deserialised return value of the remote function.
@@ -161,6 +165,7 @@ class ExecutionEngine:
             args=args,
             kwargs=kwargs,
             debug=debug,
+            timeout=timeout,
         )
 
     # ------------------------------------------------------------------
@@ -214,6 +219,7 @@ class ExecutionEngine:
         kwargs: dict[str, object],
         *,
         debug: bool = False,
+        timeout: int | None = None,
     ) -> Any:
         """Execute the function on the VM and parse the result.
 
@@ -233,6 +239,7 @@ class ExecutionEngine:
             args: Positional arguments for the remote function.
             kwargs: Keyword arguments for the remote function.
             debug: If ``True``, print raw VM output.
+            timeout: Maximum seconds to wait for execution.
 
         Returns:
             The deserialised return value.
@@ -246,7 +253,9 @@ class ExecutionEngine:
 
         for attempt in range(2):
             try:
-                return self._execute_and_parse(session_name, wrapper, debug=debug)
+                return self._execute_and_parse(
+                    session_name, wrapper, debug=debug, timeout=timeout,
+                )
             except SessionDeadError:
                 if attempt == 1:
                     raise
@@ -262,6 +271,7 @@ class ExecutionEngine:
         wrapper_code: str,
         *,
         debug: bool = False,
+        timeout: int | None = None,
     ) -> Any:
         """Send wrapper code to the VM and parse the streamed result.
 
@@ -269,11 +279,12 @@ class ExecutionEngine:
             session_name: Colab VM session name.
             wrapper_code: Python source code to execute on the VM.
             debug: If ``True``, print every raw line from the VM.
+            timeout: Maximum seconds to wait for execution.
 
         Returns:
             The deserialised return value.
         """
-        stream = self._session.run_code(session_name, wrapper_code)
+        stream = self._session.run_code(session_name, wrapper_code, timeout=timeout)
         gen = classify(stream)
 
         try:
