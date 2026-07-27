@@ -4,8 +4,10 @@ All subprocess calls are mocked to avoid requiring the actual
 ``google-colab-cli`` tool.
 """
 
+from collections.abc import Generator
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, patch
 
@@ -16,14 +18,14 @@ from colab._session import ColabSession, SessionStatus
 
 
 @pytest.fixture(autouse=True)
-def _mock_dotenv() -> None:
+def _mock_dotenv() -> Generator[None, None, None]:
     """Ensure dotenv.load_dotenv is a no-op in tests."""
     with patch("colab._session.load_dotenv"):
         yield
 
 
 @pytest.fixture
-def mock_cli() -> MagicMock:
+def mock_cli() -> Generator[MagicMock, None, None]:
     """Mock ``shutil.which`` to pretend ``colab`` is on PATH."""
     with patch("colab._session.shutil.which", return_value="/usr/bin/colab") as m:
         yield m
@@ -57,6 +59,136 @@ class TestColabSessionInit:
                 s = ColabSession()
                 assert s._env is not None
                 assert "/custom" in s._env["PATH"]
+
+
+class TestWSLInit:
+    """WSL detection and initialization (Windows-only code paths)."""
+
+    def test_wsl_found(self) -> None:
+        """On Windows, session sets ``_use_wsl = True`` if WSL has colab."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                with patch(
+                    "colab._session.subprocess.run",
+                    return_value=MagicMock(returncode=0),
+                ):
+                    s = ColabSession()
+                    assert s._use_wsl is True
+
+    def test_wsl_not_installed(self) -> None:
+        """On Windows without WSL, session creation raises."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value=None):
+                with pytest.raises(SessionError, match="WSL"):
+                    ColabSession()
+
+    def test_wsl_no_colab_cli(self) -> None:
+        """On Windows with WSL but no colab CLI inside it, session creation raises."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                with patch(
+                    "colab._session.subprocess.run",
+                    return_value=MagicMock(returncode=1),
+                ):
+                    with pytest.raises(SessionError, match="google-colab-cli"):
+                        ColabSession()
+
+
+class TestWSLBuildCmd:
+    """``_build_cmd()`` prepends ``wsl`` on Windows."""
+
+    def test_linux_no_prefix(self, session: ColabSession) -> None:
+        """On Linux, commands are returned as-is."""
+        assert session._build_cmd(["colab", "status", "-s", "s"]) == [
+            "colab", "status", "-s", "s"
+        ]
+
+    def test_windows_prepends_wsl(self) -> None:
+        """On Windows, ``wsl`` is prepended to the command."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                with patch(
+                    "colab._session.subprocess.run",
+                    return_value=MagicMock(returncode=0),
+                ):
+                    s = ColabSession()
+                    cmd = s._build_cmd(["colab", "status", "-s", "s"])
+                    assert cmd == ["wsl", "colab", "status", "-s", "s"]
+
+    def test_wsl_caches_probe_result(self) -> None:
+        """On Windows, WSL detection only runs once."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                with patch(
+                    "colab._session.subprocess.run",
+                    return_value=MagicMock(returncode=0),
+                ) as mock_run:
+                    s1 = ColabSession()
+                    s2 = ColabSession()
+                    # Subsequent sessions should also work
+                    assert s1._use_wsl is True
+                    assert s2._use_wsl is True
+
+
+class TestWSLToWSLPath:
+    """``_to_wsl_path()`` translates Windows paths to WSL paths."""
+
+    def test_linux_returns_original(self, session: ColabSession) -> None:
+        """On Linux, path is returned unchanged."""
+        assert session._to_wsl_path("/home/user/file.py") == "/home/user/file.py"
+
+    def test_windows_uses_wslpath(self) -> None:
+        """On Windows, path is translated via ``wsl wslpath -u``."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                wsl_result = MagicMock()
+                wsl_result.stdout = "/mnt/d/path/file.py"
+                wsl_result.returncode = 0
+                with patch(
+                    "colab._session.subprocess.run",
+                    side_effect=[
+                        MagicMock(returncode=0),  # WSL colab which
+                        wsl_result,  # wslpath result
+                    ],
+                ):
+                    s = ColabSession()
+                    result = s._to_wsl_path("D:\\path\\file.py")
+                    assert result == "/mnt/d/path/file.py"
+
+    def test_wslpath_fallback_manual(self) -> None:
+        """On Windows, if ``wslpath`` fails, falls back to manual conversion."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                with patch(
+                    "colab._session.subprocess.run",
+                    side_effect=[
+                        MagicMock(returncode=0),  # WSL colab which
+                        FileNotFoundError,  # wslpath not found
+                    ],
+                ):
+                    s = ColabSession()
+                    result = s._to_wsl_path("D:\\path\\file.py")
+                    assert result == "/mnt/d/path/file.py"
+
+    def test_wslpath_cache(self) -> None:
+        """On Windows, path translations are cached."""
+        with patch("colab._session.sys.platform", "win32"):
+            with patch("colab._session.shutil.which", return_value="/usr/bin/wsl.exe"):
+                wsl_result = MagicMock()
+                wsl_result.stdout = "/mnt/d/path/file.py"
+                wsl_result.returncode = 0
+                with patch(
+                    "colab._session.subprocess.run",
+                    side_effect=[
+                        MagicMock(returncode=0),  # WSL colab which (init)
+                        wsl_result,  # First wslpath call
+                    ],
+                ):
+                    s = ColabSession()
+                    result1 = s._to_wsl_path("D:\\path\\file.py")
+                    result2 = s._to_wsl_path("D:\\path\\file.py")
+                    assert result1 == result2
+                    assert result1 == "/mnt/d/path/file.py"
 
 
 class TestSessionLifecycle:
@@ -142,7 +274,7 @@ class TestCompositeOperations:
                 session.ensure_session("s", gpu="A100")
 
     def test_ensure_requirements_empty(self, session: ColabSession) -> None:
-        """No requirements → no-op."""
+        """No requirements -> no-op."""
         with patch.object(session, "install") as mock_install:
             session.ensure_requirements("s", "hash123", [])
             mock_install.assert_not_called()
@@ -194,7 +326,7 @@ class TestExecute:
         """``execute()`` yields stdout lines from the subprocess."""
         mock_process = MagicMock()
         mock_process.stdout = ["line1\n", "line2\n", "line3\n"]
-        mock_process.stderr = None  # type: ignore[assignment]
+        mock_process.stderr = None
         mock_process.wait.return_value = 0
 
         with patch("colab._session.subprocess.Popen") as mock_popen:

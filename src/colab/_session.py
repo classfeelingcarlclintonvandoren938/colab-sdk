@@ -2,6 +2,10 @@
 
 Thin wrapper around the official Google Colab CLI. This is the **only**
 component that communicates with Google.
+
+On Windows, the SDK automatically routes ``colab`` commands through WSL
+(Windows Subsystem for Linux) so users can run everything from native
+Windows Python — no separate WSL terminal needed.
 """
 
 import os
@@ -13,6 +17,7 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 from dotenv import load_dotenv
 
@@ -47,6 +52,9 @@ class ColabSession:
     Every method shells out to ``colab <command>`` via ``subprocess``.
     The ``execute()`` method streams stdout line-by-line via a generator.
 
+    On Windows, ``colab`` commands are automatically routed through WSL
+    (``wsl.exe colab ...``) — users run everything from native Python.
+
     Usage::
 
         session = ColabSession()
@@ -56,44 +64,117 @@ class ColabSession:
         session.stop("my-session")
     """
 
+    # Cache for wslpath results (avoids repeated subprocess calls for the
+    # same Windows path during a single session).
+    _wsl_path_cache: ClassVar[dict[str, str]] = {}
+
     def __init__(self) -> None:
         """Verify that ``google-colab-cli`` is available (fail-fast).
+
+        On Linux/macOS, checks that ``colab`` is on ``PATH``.
+        On Windows, checks that ``wsl.exe`` is available and that
+        ``google-colab-cli`` is installed inside WSL.
 
         Loads ``.env`` from the current directory if present, so users
         can set ``COLAB_BIN_DIR`` for non-standard install locations
         (e.g. ``/home/user/.local/bin`` inside WSL).
         """
-        if sys.platform == "win32":
-            raise SessionError(
-                "google-colab-cli does not run on native Windows. "
-                "Use WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
-            )
-
-        load_dotenv()
-        colab_bin_dir = os.environ.get("COLAB_BIN_DIR")
-
-        # Build a subprocess environment with the extra PATH if configured
+        self._use_wsl = sys.platform == "win32"
         self._env: dict[str, str] | None = None
-        if colab_bin_dir:
-            self._env = os.environ.copy()
-            self._env["PATH"] = f"{colab_bin_dir}:{self._env['PATH']}"
 
-        # Check CLI availability — use custom PATH if set
-        colab_path = shutil.which(
-            "colab",
-            path=self._env.get("PATH") if self._env else None,
-        )
-        if colab_path is None:
-            hint = (
-                f" Try setting COLAB_BIN_DIR={colab_bin_dir} in your .env file."
-                if colab_bin_dir
-                else ""
+        if self._use_wsl:
+            # Windows: verify WSL is installed
+            if shutil.which("wsl") is None:
+                raise SessionError(
+                    "WSL (Windows Subsystem for Linux) is required to run "
+                    "google-colab-cli commands on Windows. "
+                    "Install: wsl --install -d Ubuntu"
+                )
+            # Verify colab CLI exists inside WSL
+            try:
+                result = subprocess.run(
+                    ["wsl", "which", "colab"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if result.returncode != 0:
+                    raise SessionError(
+                        "google-colab-cli is not installed inside WSL. "
+                        "Run inside WSL: pip install google-colab-cli"
+                    )
+            except FileNotFoundError:
+                raise SessionError(
+                    "WSL is not available. "
+                    "Install: wsl --install -d Ubuntu"
+                ) from None
+        else:
+            # Linux / macOS: verify colab is on PATH
+            load_dotenv()
+            colab_bin_dir = os.environ.get("COLAB_BIN_DIR")
+
+            if colab_bin_dir:
+                self._env = os.environ.copy()
+                self._env["PATH"] = f"{colab_bin_dir}:{self._env['PATH']}"
+
+            colab_path = shutil.which(
+                "colab",
+                path=self._env.get("PATH") if self._env else None,
             )
-            raise SessionError(
-                "google-colab-cli is not installed. "
-                "Run: pip install google-colab-cli"
-                f"{hint}"
+            if colab_path is None:
+                hint = (
+                    f" Try setting COLAB_BIN_DIR={colab_bin_dir} in your .env file."
+                    if colab_bin_dir
+                    else ""
+                )
+                raise SessionError(
+                    "google-colab-cli is not installed. "
+                    "Run: pip install google-colab-cli"
+                    f"{hint}"
+                )
+
+    # ------------------------------------------------------------------
+    # WSL helpers
+    # ------------------------------------------------------------------
+
+    def _build_cmd(self, args: list[str]) -> list[str]:
+        """Prepend ``wsl`` on Windows so the CLI runs inside WSL.
+
+        On Linux/macOS the command is returned as-is.
+        """
+        if self._use_wsl:
+            return ["wsl", *args]
+        return args
+
+    def _to_wsl_path(self, win_path: str) -> str:
+        """Convert a Windows path to a WSL path using ``wsl wslpath -u``.
+
+        ``D:\\path\\file.py`` → ``/mnt/d/path/file.py``
+
+        Results are cached per path to avoid repeated subprocess calls.
+        """
+        if not self._use_wsl:
+            return win_path
+
+        cached = self._wsl_path_cache.get(win_path)
+        if cached is not None:
+            return cached
+
+        try:
+            result = subprocess.run(
+                ["wsl", "wslpath", "-u", win_path],
+                capture_output=True, text=True, timeout=15, check=True,
             )
+            wsl_path = result.stdout.strip()
+            self._wsl_path_cache[win_path] = wsl_path
+            return wsl_path
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Fallback: manual translation for common patterns
+            if len(win_path) > 1 and win_path[1] == ":":
+                drive = win_path[0].lower()
+                rest = win_path[2:].replace("\\", "/")
+                wsl_path = f"/mnt/{drive}{rest}"
+                self._wsl_path_cache[win_path] = wsl_path
+                return wsl_path
+            return win_path
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -104,13 +185,13 @@ class ColabSession:
 
         Args:
             name: Session name (used in subsequent commands).
-            gpu: GPU type (``\"T4\"``, ``\"L4\"``, ``\"A100\"``, ``\"H100"\"``,
+            gpu: GPU type (``\"T4\"``, ``\"L4\"``, ``\"A100\"``, ``\"H100\"``,
                 or ``None`` for CPU).
 
         Raises:
             SessionError: If the CLI command fails.
         """
-        cmd = ["colab", "new", "-s", name]
+        cmd = self._build_cmd(["colab", "new", "-s", name])
         if gpu:
             cmd.extend(["--gpu", gpu])
         self._run(cmd)
@@ -126,7 +207,7 @@ class ColabSession:
         Raises:
             SessionError: If the CLI command fails unexpectedly.
         """
-        self._run(["colab", "stop", "-s", name])
+        self._run(self._build_cmd(["colab", "stop", "-s", name]))
 
     def status(self, name: str) -> SessionStatus:
         """Check if a session is alive and return its metadata.
@@ -137,21 +218,22 @@ class ColabSession:
         Returns:
             A ``SessionStatus`` with the current session state.
         """
-        result = subprocess.run(
-            ["colab", "status", "-s", name],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=self._env,
-        )
+        cmd = self._build_cmd(["colab", "status", "-s", name])
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=getattr(self, "_env", None),
+            )
+        except FileNotFoundError:
+            return SessionStatus(alive=False, name=name, gpu="")
 
         if result.returncode != 0:
-            # Session is dead or doesn't exist
             return SessionStatus(alive=False, name=name, gpu="")
 
         # Exit code 0, but check the output text for dead-session indicators.
-        # The CLI may cache stale state locally and report exit 0 even when
-        # the backend session was stopped or never created.
         output = (result.stdout + result.stderr).lower()
         if "not found" in output or "no such session" in output:
             return SessionStatus(alive=False, name=name, gpu="")
@@ -166,9 +248,7 @@ class ColabSession:
         """Create a session if one does not exist or is dead.
 
         After calling ``start()``, verifies the session is actually
-        alive by calling ``status()`` again. This catches cases where
-        ``colab new`` exits 0 but the session is not fully initialised
-        or a stale name conflicts with previous state.
+        alive by calling ``status()`` again.
 
         Args:
             name: Session name.
@@ -188,11 +268,10 @@ class ColabSession:
                     f"but GPU '{gpu}' was requested. "
                     f"Stop the session and create a new one to change GPU type."
                 )
-            return  # Session is alive and GPU matches — no-op
+            return
 
         self.start(name, gpu)
 
-        # Verify the session is actually alive after creation
         post = self.status(name)
         if not post.alive:
             raise SessionError(
@@ -208,13 +287,10 @@ class ColabSession:
     ) -> None:
         """Install packages only if the hash is not cached on the VM.
 
-        Checks for a marker file at ``~/.colab-client/hashes/<hash>`` on the
-        VM. If absent, runs ``colab install`` and writes the marker.
-
         Args:
             name: Session name.
             requirements_hash: SHA256 hex digest of the sorted requirements.
-            packages: Package names to install (e.g. ``[\"torch\", \"numpy\"]``).
+            packages: Package names to install.
 
         Raises:
             SessionError: If the probe or install command fails.
@@ -224,9 +300,6 @@ class ColabSession:
 
         marker_path = f"/content/.colab-client/hashes/{requirements_hash}"
 
-        # Probe whether the marker file already exists on the VM.
-        # colab exec only supports -f (file), so write the probe to a
-        # temporary local file first.
         probe_script = (
             f"import os\n"
             f"exit(0) if os.path.exists('{marker_path}') else exit(1)\n"
@@ -238,24 +311,26 @@ class ColabSession:
             tmp_probe.write(probe_script)
             tmp_probe.close()
 
+            # Translate temp file path when running through WSL
+            probe_path = self._to_wsl_path(tmp_probe.name)
+            cmd = self._build_cmd(
+                ["colab", "exec", "-s", name, "-f", probe_path]
+            )
+
             probe_result = subprocess.run(
-                ["colab", "exec", "-s", name, "-f", tmp_probe.name],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=60,
-                env=self._env,
+                env=getattr(self, "_env", None),
             )
 
             if probe_result.returncode == 0:
-                # Hash is already cached — skip installation
                 return
         finally:
             os.unlink(tmp_probe.name)
 
-        # Install packages
         self.install(name, *packages)
-
-        # Persist the hash marker
         self.write_file(name, marker_path, requirements_hash)
 
     # ------------------------------------------------------------------
@@ -273,13 +348,13 @@ class ColabSession:
         Args:
             name: Session name.
             local_path: Path to the local file or directory.
-            remote_path: Destination on the VM. Defaults to
-                ``/content/<filename>``.
+            remote_path: Destination on the VM.
 
         Raises:
             SessionError: If the upload fails.
         """
-        cmd = ["colab", "upload", "-s", name, str(local_path)]
+        wsl_path = self._to_wsl_path(str(local_path))
+        cmd = self._build_cmd(["colab", "upload", "-s", name, wsl_path])
         if remote_path:
             cmd.append(remote_path)
         self._run(cmd)
@@ -295,8 +370,7 @@ class ColabSession:
         Args:
             name: Session name.
             remote_path: Path to the file on the VM.
-            local_path: Destination path locally. Defaults to
-                ``./<filename>``.
+            local_path: Destination path locally.
 
         Returns:
             The local path the file was downloaded to.
@@ -305,7 +379,10 @@ class ColabSession:
             SessionError: If the download fails.
         """
         dest = Path(local_path or Path(remote_path).name)
-        cmd = ["colab", "download", "-s", name, remote_path, str(dest)]
+        wsl_dest = self._to_wsl_path(str(dest))
+        cmd = self._build_cmd(
+            ["colab", "download", "-s", name, remote_path, wsl_dest]
+        )
         self._run(cmd)
         return dest.resolve()
 
@@ -321,7 +398,7 @@ class ColabSession:
         """
         if not packages:
             return
-        cmd = ["colab", "install", "-s", name, *packages]
+        cmd = self._build_cmd(["colab", "install", "-s", name, *packages])
         self._run(cmd)
 
     # ------------------------------------------------------------------
@@ -332,7 +409,6 @@ class ColabSession:
         """Execute a local Python file on the Colab VM.
 
         Yields stdout lines **in real-time** as they arrive from the VM.
-        Stderr is forwarded separately.
 
         Args:
             name: Session name.
@@ -344,7 +420,10 @@ class ColabSession:
         Raises:
             SessionError: If execution fails or the session is dead.
         """
-        cmd = ["colab", "exec", "-s", name, "-f", str(local_file)]
+        wsl_path = self._to_wsl_path(str(local_file))
+        cmd = self._build_cmd(
+            ["colab", "exec", "-s", name, "-f", wsl_path]
+        )
         yield from self._exec(cmd)
 
     def run_code(self, name: str, code: str) -> Generator[str, None, None]:
@@ -352,8 +431,6 @@ class ColabSession:
 
         Unlike ``execute()`` (which reads a local file via ``-f``),
         this method pipes *code* through stdin to ``colab exec``.
-        Useful for setup steps (e.g. extracting archives) or for
-        wrapping the target function call.
 
         Args:
             name: Session name.
@@ -365,7 +442,7 @@ class ColabSession:
         Raises:
             SessionError: If execution fails or the session is dead.
         """
-        cmd = ["colab", "exec", "-s", name]
+        cmd = self._build_cmd(["colab", "exec", "-s", name])
         yield from self._exec(cmd, stdin_data=code)
 
     def _exec(
@@ -376,7 +453,8 @@ class ColabSession:
         """Shared subprocess helper for remote execution.
 
         Args:
-            cmd: The ``colab exec`` command list.
+            cmd: The ``colab exec`` command list (already processed by
+                ``_build_cmd`` on Windows).
             stdin_data: Optional code to send via stdin.
 
         Yields:
@@ -393,22 +471,18 @@ class ColabSession:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                env=self._env,
+                env=getattr(self, "_env", None),
             ) as proc:
-                # Send stdin data if provided
                 if stdin_data is not None and proc.stdin:
                     proc.stdin.write(stdin_data)
                     proc.stdin.close()
 
-                # Yield stdout lines in real-time
                 if proc.stdout:
                     for line in proc.stdout:
                         yield line.rstrip("\n")
 
-                # Wait for process to finish
                 returncode = proc.wait()
 
-                # Collect stderr (may contain __LAZY_ERROR__)
                 stderr_output = ""
                 if proc.stderr:
                     stderr_output = proc.stderr.read()
@@ -418,10 +492,12 @@ class ColabSession:
                         f"Execution failed (exit code {returncode}):\n{stderr_output}"
                     )
         except FileNotFoundError:
-            raise SessionError(
-                "google-colab-cli is not installed. "
-                "Run: pip install google-colab-cli"
-            ) from None
+            msg = (
+                "WSL is not available."
+                if self._use_wsl
+                else "google-colab-cli is not installed. Run: pip install google-colab-cli"
+            )
+            raise SessionError(msg) from None
 
     # ------------------------------------------------------------------
     # Utility
@@ -463,20 +539,32 @@ class ColabSession:
     # ------------------------------------------------------------------
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        """Run a CLI command and raise on failure."""
+        """Run a CLI command and raise on failure.
+
+        Args:
+            cmd: Command list (already processed by ``_build_cmd`` on Windows).
+
+        Returns:
+            The completed process result.
+
+        Raises:
+            SessionError: If the command fails or times out.
+        """
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=300,
-                env=self._env,
+                env=getattr(self, "_env", None),
             )
         except FileNotFoundError:
-            raise SessionError(
-                "google-colab-cli is not installed. "
-                "Run: pip install google-colab-cli"
-            ) from None
+            msg = (
+                "WSL is not available."
+                if self._use_wsl
+                else "google-colab-cli is not installed. Run: pip install google-colab-cli"
+            )
+            raise SessionError(msg) from None
         except subprocess.TimeoutExpired:
             raise SessionError(f"Command timed out: {' '.join(cmd)}") from None
 
