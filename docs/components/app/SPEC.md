@@ -24,30 +24,54 @@ A configured `App` instance ready to register functions and execute them remotel
 
 - Validates GPU type against known list
 - Validates idle_timeout format
-- Creates an `ExecutionEngine` instance
+- Creates an `ExecutionEngine` instance (injected with `Analyzer` + `ColabSession`)
 - Creates a `ColabSession` instance (lazy: no VM created)
+- `App` excludes itself from dependency analysis so its internal imports (e.g. `dotenv`) don't leak into the remote manifest
 
 ### `app.login()`
 
 Triggers authentication with Google Colab. Calls `google-colab-cli`'s auth flow.
 
 - **Optional**: If the user is already authenticated, this is a no-op.
-- **Auto-triggered**: Called implicitly by the engine before the first `.remote()` if not already authenticated.
+- **Auto-triggered**: The first `colab` command that requires auth triggers the OAuth flow automatically.
 - **Idempotent**: Safe to call multiple times.
 
 ### `@app.function(**kwargs)`
 
-Decorator that registers a function for remote execution.
+Decorator that registers a function for remote execution. Supports two forms:
 
 ```python
+# Bare decorator (no arguments)
+@app.function
+def train():
+    ...
+
+# Decorator with arguments
 @app.function(gpu="T4", timeout=300)
 def train():
     ...
+
+# Non-decorator form (for pre-defined functions)
+hello = app.function(hello)
 ```
 
 Returns a `RemoteFunction` instance.
 
 See `components/function/SPEC.md` for details.
+
+### `remote(debug=False)`
+
+Every `RemoteFunction` exposes a `.remote()` method:
+
+```python
+result = train.remote(epochs=10, lr=0.01)
+```
+
+- `*args` / `**kwargs` are forwarded to the remote function
+- **All args/kwargs must be JSON-serialisable** (they are embedded in the wrapper code)
+- `debug=True` prints every raw line from the VM to stderr with `[colab-raw]` prefix
+- Returns the deserialised return value of the remote function
+- Raises `RemoteExecutionError` if the remote function raises
 
 ### `app.shutdown()`
 
@@ -95,8 +119,8 @@ app.secret("HF_TOKEN", "hf_abc123")
 app.secret("WANDB_API_KEY", "wandb_xyz")
 ```
 
-- Stores the secret locally; on the next `.remote()` call, the runner.py is generated with `os.environ[<name>] = <value>` before the function executes
-- Secrets are **not** sent to the VM until the next `.remote()` — they are embedded into `runner.py`
+- Stores the secret locally; on the next `.remote()` call, the wrapper code is generated with `os.environ[<name>] = <value>` before the function executes
+- Secrets are **not** sent to the VM until the next `.remote()` — they are embedded into the inline wrapper code
 - Idempotent: calling `app.secret("KEY", "val")` twice overwrites with the latest value
 - Not persisted across script restarts (must be set each session)
 
@@ -108,6 +132,7 @@ app.secret("WANDB_API_KEY", "wandb_xyz")
 - **Upload before session**: `app.upload()` auto-creates the session if not already active (same lazy creation as `.remote()`).
 - **Non-existent local file**: `app.upload()` raises `FileNotFoundError`.
 - **Missing remote file**: `app.download()` raises `DownloadError` if the remote file doesn't exist.
+- **Function module import**: Functions defined at module level (not inside `main()`) can be imported on the VM without SDK dependency. Prefer defining remote functions outside SDK-using code.
 
 ## What App Does NOT Do
 

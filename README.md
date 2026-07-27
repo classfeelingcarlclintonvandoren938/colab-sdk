@@ -45,10 +45,11 @@ native Windows. Use WSL2 instead:
    pip install colab-client
    ```
 
-4. **Authenticate with Google Colab:**
+4. **Authenticate with Google Colab** (run any command — auth triggers automatically):
    ```bash
-   colab auth login
+   colab new -s test-session
    ```
+   Follow the OAuth URL in your browser and paste the authorization code.
 
 All `colab` commands run inside WSL2. Your project files on the Windows
 filesystem are accessible from WSL2 at `/mnt/c/`.

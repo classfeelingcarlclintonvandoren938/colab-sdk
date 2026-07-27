@@ -46,12 +46,13 @@ Methods that wrap `google-colab-cli` commands:
 | `start(name, gpu)` | `colab new -s <name> --gpu <type>` | None |
 | `stop(name)` | `colab stop -s <name>` | None |
 | `status(name)` | `colab status -s <name>` | `SessionStatus` (alive/dead + metadata) |
-| `ensure_session(name, gpu)` | Composes `status()` + `start()` | None |
+| `ensure_session(name, gpu)` | Composes `status()` + `start()` (with post-creation verification) | None |
 | `ensure_requirements(name, requirements_hash, packages)` | Composes temp-file probe + `install()` | None |
 | `upload(name, local, remote)` | `colab upload -s <name> <local> <remote>` | None |
 | `download(name, remote, local)` | `colab download -s <name> <remote> <local>` | Path to downloaded file |
 | `install(name, packages)` | `colab install -s <name> <pkg1> <pkg2>` | None |
 | `execute(name, local_file)` | `colab exec -s <name> -f <local_file>` | Generator of stdout lines |
+| `run_code(name, code)` | `colab exec -s <name>` (stdin piping) | Generator of stdout lines |
 | `write_file(name, remote_path, content)` | N/A (inline content → temp file → upload) | None |
 
 ## Session Status
@@ -78,7 +79,6 @@ session.start("lazy", "T4")
 
 - Blocks until the session is ready (CLI handles waiting)
 - Raises `SessionError` if provisioning fails
-- Idempotent: if a session with this name already exists and is alive, this is a no-op
 
 ### `stop(name)`
 
@@ -94,30 +94,35 @@ session.stop("lazy")
 
 ### `status(name)`
 
-Checks if the session is alive using the CLI exit code.
+Checks if the session is alive using the CLI exit code **and** output text.
 
 ```python
 status = session.status("lazy")
 # → subprocess.run(["colab", "status", "-s", "lazy"], capture_output=True)
 ```
 
-- Returns `SessionStatus(alive=True, ...)` if exit code is 0
-- Returns `SessionStatus(alive=False, ...)` if exit code is non-zero (session dead or doesn't exist)
+- Returns `SessionStatus(alive=True, ...)` if exit code is 0 **and** output does not contain "not found" or "no such session"
+- Returns `SessionStatus(alive=False, ...)` if exit code is non-zero, or if output contains dead-session indicators
+- The output text check catches cases where the CLI returns exit 0 with stale cached state
 - **Note:** The `colab status` command does **not** have a `--json` flag, so only basic alive/dead status is available. GPU info is not parsed from the human-readable output.
 
 ### `ensure_session(name, gpu)`
 
-Composes `status()` and `start()` to ensure a session exists and is healthy.
+Composes `status()` and `start()` to ensure a session exists and is healthy, with post-creation verification.
 
 ```python
 session.ensure_session("lazy", "T4")
-# → status("lazy") → if dead or missing: start("lazy", "T4")
+# → status("lazy")
+# → if dead or missing: start("lazy", "T4")
+# → status("lazy") again to verify
 ```
 
 - Calls `status(name)` first to check session health
-- If session exists and is alive: no-op
+- If session exists and is alive: no-op (fast path)
 - If session is dead or doesn't exist: calls `start(name, gpu)`
-- This is the primary method used by Engine — replaces manual status/start calls
+- **After start**, calls `status()` again to verify the session is actually alive
+- Raises `SessionError` if the session is not responsive after creation
+- This is the primary method used by Engine
 
 ### `ensure_requirements(name, requirements_hash, packages)`
 
@@ -144,11 +149,25 @@ for line in session.execute("lazy", "runner.py"):
     print(line)  # Real-time output from colab exec
 ```
 
-- `local_file` is read by `colab exec` and transmitted to the VM's Jupyter kernel
+- `local_file` is read by `colab exec -f` and transmitted to the VM's Jupyter kernel
 - Stdout is yielded line by line as the CLI receives it
-- Stderr is captured separately and forwarded to the caller
+- Stderr is captured separately and read on process completion
 - Exits after the kernel completes execution
-- Raises `RemoteExecutionError` if the CLI exits with non-zero status
+- Raises `SessionError` if the CLI exits with non-zero status
+
+### `run_code(name, code)`
+
+Executes Python code directly on the Colab VM via stdin (no temp file needed).
+
+```python
+for line in session.run_code("lazy", "import os; print(os.name)"):
+    print(line)  # Real-time output from colab exec
+```
+
+- Code is piped to `colab exec` via `stdin` (no `-f` flag)
+- Useful for setup steps (extracting archives, injecting secrets) or wrapping function calls
+- Same streaming/yield behavior as `execute()`
+- Raises `SessionError` if the CLI exits with non-zero status
 
 ### `upload(name, local, remote)`
 
@@ -179,7 +198,7 @@ session.write_file("lazy", "/content/.env", "HF_TOKEN=hf_abc123")
 ```
 
 - Creates a temporary local file with the content, uploads it, then removes the temp file
-- Used internally by the engine to inject secrets before execution
+- Used internally by the engine to persist requirement hash markers
 - Not typically called directly by users
 
 ---
@@ -200,15 +219,23 @@ def start(self, name, gpu):
         raise SessionError(result.stderr)
 ```
 
-The `execute()` method uses `Popen` with streaming:
+Both `execute()` and `run_code()` share the same `_exec()` helper which uses `Popen` with streaming:
 
 ```python
-def execute(self, name, local_file):
-    cmd = ["colab", "exec", "-s", name, "-f", local_file]
-    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+def _exec(self, cmd, stdin_data=None):
+    with subprocess.Popen(cmd, stdin=subprocess.PIPE if stdin_data else None,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           text=True, bufsize=1, env=self._env) as proc:
+        if stdin_data is not None and proc.stdin:
+            proc.stdin.write(stdin_data)
+            proc.stdin.close()
+
         for line in proc.stdout:
             yield line.rstrip("\n")
+
+        returncode = proc.wait()
+        if returncode != 0:
+            raise SessionError(...)
 ```
 
 ---
@@ -226,8 +253,7 @@ def execute(self, name, local_file):
 
 ## Protocol Dependencies
 
-- `protocols/artifact-format.md` — Uploads and executes the artifact
-- `protocols/stdout-protocol.md` — Passes through `__LAZY_*` output from `execute()`
+- `protocols/stdout-protocol.md` — Passes through `__LAZY_*` output from `execute()` / `run_code()`
 
 ## References
 

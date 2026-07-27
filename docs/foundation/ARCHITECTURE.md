@@ -18,26 +18,25 @@
 │  ┌──────────────────────────┐       │
 │  │    Execution Engine      │       │
 │  │   (orchestration only)   │       │
-│  └───┬──────┬───────┬──────┘       │
-│      │      │       │              │
-│      ▼      ▼       ▼              │
-│  ┌────┐ ┌──────┐ ┌───────────┐    │
-│  │Ana-│ │Pack- │ │Colab      │    │
-│  │lyzr│ │ager  │ │Session    │    │
-│  └────┘ └──────┘ └─────┬─────┘    │
-│                         │          │
-└─────────────────────────┼──────────┘
-                          │ google-colab-cli
-                          ▼
-              ┌───────────────────────┐
-              │   Google Colab VM     │
-              │                       │
-              │  GPU (T4/L4/A100/..)  │
-              │  ┌─────────────────┐  │
-              │  │ artifact.tar.gz │  │
-              │  │ runner.py exec()│  │
-              │  └─────────────────┘  │
-              └───────────────────────┘
+│  └───┬──────────┬───────────┘       │
+│      │          │                   │
+│      ▼          ▼                   │
+│  ┌────────┐ ┌───────────┐          │
+│  │ Ana-   │ │ Colab     │          │
+│  │ lyzer  │ │ Session   │          │
+│  └────────┘ └─────┬─────┘          │
+│                   │                │
+└───────────────────┼────────────────┘
+                    │ google-colab-cli
+                    ▼
+        ┌───────────────────────┐
+        │   Google Colab VM     │
+        │                       │
+        │  GPU (T4/L4/A100/..)  │
+        │                       │
+        │  colab exec stdin     │
+        │  (inline Python code) │
+        └───────────────────────┘
 ```
 
 ---
@@ -71,7 +70,7 @@ Does **not** own state beyond metadata. Does not know about sessions or VMs.
 
 Orchestrates the execution pipeline. Calls other components in order.
 
-Pipeline: Validate → Analyze → Package → Ensure Session → Upload → Install → Execute → Parse Result → Return
+Pipeline: Validate → Analyze → Ensure Session → Install (if needed) → Execute (inline code) → Parse → Return
 
 - Orchestrates the pipeline
 - Handles errors at each stage
@@ -107,7 +106,8 @@ Does **not** analyze dependencies or upload artifacts.
 Thin wrapper around `google-colab-cli`. The only component that talks to Google.
 
 - `start(name, gpu)` → `colab new -s <name> --gpu <type>`
-- `execute(name, file)` → `colab exec -s <name> -f <file>` (streams output)
+- `execute(name, file)` → `colab exec -s <name> -f <file>` (streams output, local file)
+- `run_code(name, code)` → `colab exec -s <name>` (streams output, stdin)
 - `upload(name, local, remote)` → `colab upload`
 - `download(name, remote, local)` → `colab download`
 - `install(name, packages)` → `colab install`
@@ -151,7 +151,7 @@ colab stop -s <name>
 - **Lazy creation**: Session only boots on first `.remote()`.
 - **Health check**: Each `.remote()` verifies the session is alive. If dead, creates new.
 - **No auto-shutdown**: Script exit does not stop the session. Session persists until `app.shutdown()` or Colab's internal timeout.
-- **Idle timeout**: Reserved for future use. Currently, session lifetime is managed by `google-colab-cli`'s keep-alive (60s ping, 24h max). The `App(idle_timeout="30m")` parameter is a placeholder — idle timeout will be implemented as a background check if needed post-MVP.
+- **Idle timeout**: Reserved for future use. Currently, session lifetime is managed by `google-colab-cli`'s keep-alive (60s ping, 24h max). The `App(idle_timeout=\"30m\")` parameter is a placeholder — idle timeout will be implemented as a background check if needed post-MVP.
 - **Keep-alive**: Managed by `google-colab-cli` (60s ping, 24h max).
 
 ---
@@ -163,7 +163,8 @@ colab stop -s <name>
 | Action | CLI Command |
 |---|---|
 | Create session | `colab new -s <name> --gpu <type>` |
-| Execute code | `colab exec -s <name> -f <file>` |
+| Execute local file | `colab exec -s <name> -f <file>` |
+| Execute code (stdin) | `colab exec -s <name>` (pipe code to stdin) |
 | Upload file | `colab upload -s <name> <local> <remote>` |
 | Download file | `colab download -s <name> <remote> <local>` |
 | Install packages | `colab install -s <name> <pkg>` |
@@ -197,9 +198,10 @@ See `protocols/stdout-protocol.md` for details.
    → Parse AST, resolve imports
    → ExecutionManifest
 
-3. Packager.build(manifest, args, kwargs, app.secrets)
-   → Copy files, generate runner.py with os.environ injection
-   → artifact.tar.gz + hash
+3. Engine._build_wrapper(manifest, args, kwargs, secrets)
+   → Base64-encode all source files
+   → Generate self-contained Python script that writes files,
+     injects secrets, imports function, calls it, emits result
 
 4. ColabSession.ensure_session(name="lazy", gpu="T4")
    → status() check → if dead/missing: start() with GPU
@@ -209,16 +211,15 @@ See `protocols/stdout-protocol.md` for details.
    → Skip if hash cached on VM
    → colab install if new
 
-6. ColabSession.upload(artifact)
-   → colab upload artifact.tar.gz
+6. ColabSession.run_code(name, wrapper_code)
+   → colab exec -s <name> (code piped via stdin)
+   → Writes source files, injects secrets, executes function
+   → Streams stdout in real-time
 
-7. ColabSession.execute("runner.py")
-   → colab exec -s <name> -f runner.py
-   → Stream stdout in real-time
-
-8. Engine.parse_result(stdout)
-   → Find __LAZY_RESULT__ marker
-   → Deserialize JSON
+7. Engine._execute_and_parse(stdout)
+   → Iterate the stream, forward non-prefixed lines
+   → Detect __LAZY_RESULT__ marker, deserialize JSON
+   → Detect __LAZY_ERROR__ marker, raise RemoteExecutionError
    → Return to caller
 ```
 
@@ -244,12 +245,13 @@ app.download("checkpoint.pt")
 |---|---|
 | **App** | SDK entry point. Holds configuration, engine, and session. |
 | **RemoteFunction** | Created by `@app.function`. A handle with metadata that delegates `.remote()` to the engine. |
-| **ExecutionManifest** | Output of the Analyzer. Contains a list of required files and external packages. |
-| **Artifact** | A `.tar.gz` file produced by the Packager from a Manifest. Contains source files, `runner.py`, and metadata. |
+| **ExecutionManifest** | Output of the Analyzer. Contains a list of required files (relative paths) and external packages. |
+| **Artifact** | A `.tar.gz` file produced by the Packager from a Manifest. Used for local caching/tracking, not uploaded. |
 | **runner.py** | Generated entry point script inside the artifact. Imports the target function, executes it, and serializes the result via `__LAZY_*` protocol. |
+| **Wrapper** | Self-contained Python script generated by the Engine at execution time. Base64-encodes source files, injects secrets, imports and calls the target function. Sent to the VM via `colab exec` stdin. |
 | **Session** | A persistent Colab VM. Created by `colab new`. Kept alive by `google-colab-cli`'s keep-alive mechanism. |
 | **ColabSession** | Python wrapper class around `google-colab-cli` commands. The only component that communicates with Google. |
-| **ExecutionEngine** | Orchestrator. Calls Analyzer, Packager, ColabSession in sequence. |
+| **ExecutionEngine** | Orchestrator. Calls Analyzer, Session in sequence. Generates inline wrapper code — no file upload needed. |
 | **google-colab-cli** | Official Google CLI (`pip install google-colab-cli`). Provides `colab new`, `colab exec`, `colab upload`, etc. |
 | **keep-alive** | Background daemon spawned by `google-colab-cli` that pings Colab every 60s to prevent idle VM termination. |
 | **`__LAZY_*` protocol** | Structured stdout/stderr markers: `__LAZY_RESULT__`, `__LAZY_ERROR__`, `__LAZY_LOG__`, `__LAZY_PROGRESS__`. |
