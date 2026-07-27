@@ -10,7 +10,7 @@
 
 ## Consumed By
 
-`ColabSession.execute(name, runner_path)` — the artifact is extracted on the Colab VM, then `runner.py` is executed.
+Used for local caching and deterministic tracking. The artifact is **not** uploaded during execution — source files are delivered inline via `ColabSession.run_code()`. See `docs/components/engine/SPEC.md` for the current execution pipeline.
 
 ---
 

@@ -106,7 +106,7 @@ These statements **must always be true**. Every ADR and implementation must resp
 
 ## 9. MVP Scope
 
-**Included:** `App` API, `@app.function` decorator, `.remote()` execution, Google Colab integration via `google-colab-cli`, static dependency analysis, packaging (manifest → `.tar.gz`), artifact upload, persistent session with lazy creation, GPU selection (T4, L4, A100, H100), result retrieval via stdout protocol, real-time log streaming, error propagation, requirements caching via hash, explicit `app.shutdown()`, optional `app.login()`, `app.upload()` / `app.download()` for file transfer, `app.secret()` for environment variable injection.
+**Included:** `App` API, `@app.function` decorator, `.remote()` execution, Google Colab integration via `google-colab-cli`, static dependency analysis (AST-based), inline file delivery (source files base64-encoded in wrapper code — no upload needed), persistent session with lazy creation, GPU selection (T4, L4, A100, H100), result retrieval via stdout protocol, real-time log streaming, error propagation, requirements caching via hash, explicit `app.shutdown()`, optional `app.login()`, `app.upload()` / `app.download()` for file transfer, `app.secret()` for environment variable injection, debug mode for VM output inspection.
 
 **Excluded:** Multi-provider support, distributed execution, volumes, secrets, background jobs, workflow DAGs, autoscaling, queue systems, team collaboration, dashboard, WebSocket, Worker daemon, actor model, cancellation.
 
@@ -146,17 +146,16 @@ Each component has a single responsibility. See `ARCHITECTURE.md` for details.
 
 ## 12. Execution Lifecycle
 
-1. Validate function metadata
+1. Validate GPU type
 2. Analyze dependencies (Analyzer → `ExecutionManifest`)
-3. Package artifact (Packager → `.tar.gz`)
-4. Ensure session (ColabSession: `colab new` if needed)
-5. Upload artifact
-6. Install requirements if not cached
-7. Execute via `colab exec` → streams stdout/stderr
-8. Parse result from `__LAZY_RESULT__` protocol
-9. Return to caller
+3. Ensure session (ColabSession: `colab new` if needed)
+4. Install requirements if not cached
+5. Build inline wrapper (base64-encode source files, inject secrets, generate result protocol)
+6. Execute via `colab exec` (stdin) → streams stdout/stderr
+7. Parse result from `__LAZY_RESULT__` protocol
+8. Return to caller
 
-Steps 4-6 are skipped on subsequent `.remote()` calls if session is alive.
+Steps 3-4 are skipped on subsequent `.remote()` calls if session is alive. No file upload is needed — source files are delivered inline.
 
 ## 13. Error Handling
 

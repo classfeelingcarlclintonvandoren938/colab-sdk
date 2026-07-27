@@ -59,7 +59,7 @@ result = train.remote(epochs=10, lr=0.001)
 ## Edge Cases
 
 - **No arguments**: `fn.remote()` with no args is valid.
-- **Non-serializable arguments**: Arguments passed to `.remote()` must be JSON-serializable (they are serialized and embedded in `runner.py`).
+- **Non-serializable arguments**: Arguments passed to `.remote()` must be JSON-serializable (they are serialized and embedded in the wrapper code sent to the VM).
 - **Non-serializable return values**: Return values must also be JSON-serializable — they are wrapped in the `__LAZY_RESULT__` protocol as JSON. Complex Python objects (custom classes, generators, file handles) must be serialized by the user.
 - **Overridden GPU**: If the function specifies a GPU different from the App's default, the function's GPU is used. If a session already exists with a different GPU type, a `SessionGpuMismatchError` is raised (see Engine SPEC).
 

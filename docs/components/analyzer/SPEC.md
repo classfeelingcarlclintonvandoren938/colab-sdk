@@ -8,7 +8,13 @@
 
 `analyzer.analyze(function_name: str, source_file: Path) -> ExecutionManifest`
 
-The source file is located, parsed, and analyzed recursively. The function name is recorded in the manifest for the packager to embed in `runner.py`.
+The source file is located, parsed, and analyzed recursively. The function name is recorded in the manifest.
+
+### exclude_packages
+
+The `Analyzer` accepts an optional `exclude_packages` parameter (a `frozenset` of top-level package names). Packages in this set are silently skipped during import resolution — they are neither traced into (added to `files`) nor added to `requirements`. This prevents the SDK's own internal imports from leaking into the remote execution manifest.
+
+Example: `Analyzer(project_root=root, exclude_packages=frozenset({"colab"}))`
 
 ## Output
 
