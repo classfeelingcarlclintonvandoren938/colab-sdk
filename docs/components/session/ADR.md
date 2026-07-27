@@ -22,9 +22,13 @@ One App = one session. There is no session pooling, no load balancing, no sessio
 
 All communication goes through `google-colab-cli`, which manages its own connection (WebSocket to Jupyter kernel for `colab exec`, TFE tunnel for keep-alive). There is no persistent SSH session, no direct TCP connection, and no custom protocol. This is intentional: delegating connectivity to the CLI reduces the SDK's attack surface and maintenance burden.
 
-## Why upload before execute
+## Why inline files instead of upload
 
-The artifact must be on the VM before execution. `colab upload` transfers the `.tar.gz`, then `colab exec` triggers extraction and execution. This two-step process is consistent with how `google-colab-cli` works and provides clear error boundaries: if upload fails, the error is about upload, not execution.
+Source files are delivered inline (base64-encoded in the wrapper code sent via `colab exec` stdin) rather than uploaded as a `.tar.gz` artifact. This removes the `colab upload` dependency from the hot path, which was unreliable in practice (`colab upload` sometimes exits with code 1 without a clear error message).
+
+Inline delivery also simplifies the pipeline from 9 steps to 6, eliminates the extraction step on the VM, and keeps all file transfer within a single `colab exec` call. The `colab upload` command is still available for explicit file transfer (`app.upload()`), but it is no longer part of the execution pipeline.
+
+This decision trades larger wrapper code (base64 overhead) for reduced latency and fewer failure modes. For projects with many files (>50), the wrapper size may become a concern — at that point, an upload-based fallback could be re-introduced as an optimization.
 
 ## References
 
