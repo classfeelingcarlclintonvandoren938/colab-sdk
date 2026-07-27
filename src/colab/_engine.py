@@ -11,12 +11,14 @@ Usage::
         source_file=Path("app.py"),
         args=(10,),
         kwargs={"lr": 0.001},
-        secrets={"HF_TOKEN": "abc"},
     )
 """
 
 from __future__ import annotations
 
+import base64
+import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -24,14 +26,15 @@ from typing import Any
 from colab._analyzer import Analyzer
 from colab._exceptions import (
     AuthError,
+    RemoteExecutionError,
     SessionDeadError,
     SessionError,
     SessionGpuMismatchError,
     ValidationError,
 )
 from colab._manifest import ExecutionManifest
-from colab._packager import Artifact, Packager
-from colab._protocol import ResultMessage, classify
+from colab._packager import Packager, _entry_point_to_module
+from colab._protocol import LogMessage, ProgressMessage, ResultMessage, classify
 from colab._session import ColabSession
 
 __all__ = [
@@ -44,6 +47,14 @@ _KNOWN_GPUS = frozenset({"T4", "L4", "A100", "H100"})
 # Retry defaults
 _MAX_TRANSIENT_RETRIES = 3
 _RETRY_DELAY_SECONDS = 1.0
+
+
+def _debug_print(msg: LogMessage | ProgressMessage) -> None:
+    """Print a raw VM message to stderr for debugging."""
+    if isinstance(msg, LogMessage):
+        print(f"[colab-raw] {msg.text}", file=sys.stderr, flush=True)
+    else:
+        print(f"[colab-raw] {msg}", file=sys.stderr, flush=True)
 
 
 class ExecutionEngine:
@@ -89,13 +100,14 @@ class ExecutionEngine:
         *,
         session_name: str = "default",
         gpu: str | None = None,
+        debug: bool = False,
     ) -> Any:
         """Execute a function remotely on a Colab VM.
 
         The full pipeline::
 
-            validate → analyze → package → ensure_session →
-            ensure_requirements → upload → execute → parse → return
+            validate -> analyze -> package -> ensure_session ->
+            ensure_requirements -> execute -> parse -> return
 
         Args:
             function_name: Name of the function to execute.
@@ -104,8 +116,9 @@ class ExecutionEngine:
             kwargs: Keyword arguments for the remote function.
             secrets: Environment variables to inject on the VM.
             session_name: Name for the Colab VM session.
-            gpu: GPU type (``\"T4\"``, ``\"L4\"``, ``\"A100\"``, ``\"H100\"``,
+            gpu: GPU type (``\\\"T4\\\"``, ``\\\"L4\\\"``, ``\\\"A100\\\"``, ``\\\"H100\\\"``,
                 or ``None`` for CPU).
+            debug: If ``True``, print all raw VM output to stderr.
 
         Returns:
             The deserialised return value of the remote function.
@@ -113,8 +126,7 @@ class ExecutionEngine:
         Raises:
             ValidationError: If GPU type is invalid.
             AnalysisError: If static analysis fails.
-            PackagingError: If artifact packaging fails.
-            SessionError: If session or upload operations fail.
+            SessionError: If session operations fail.
             RemoteExecutionError: If the remote function raises.
             ProtocolError: If the stdout protocol is malformed.
         """
@@ -127,21 +139,19 @@ class ExecutionEngine:
         # Step 2: Analyse
         manifest = self._analyzer.analyze(function_name, source_file)
 
-        # Step 3: Package
-        artifact = self._packager.build(manifest, args, kwargs, secrets)
+        # Step 3: Build artifact (for deterministic tracking, not uploaded)
+        self._packager.build(manifest, args, kwargs, secrets)
 
-        # Steps 4-6: Session management (with retry for transient failures)
+        # Steps 4-5: Session management (with retry for transient failures)
         for attempt in range(_MAX_TRANSIENT_RETRIES):
             try:
                 self._prepare_session(
                     session_name=session_name,
                     gpu=gpu,
                     manifest=manifest,
-                    artifact=artifact,
                 )
-                break  # Success — exit retry loop
+                break
             except (SessionError, OSError) as exc:
-                # Non-retriable errors: configuration or auth failures
                 if isinstance(exc, (SessionGpuMismatchError, AuthError)):
                     raise
                 if attempt == _MAX_TRANSIENT_RETRIES - 1:
@@ -149,10 +159,14 @@ class ExecutionEngine:
                 delay = _RETRY_DELAY_SECONDS * (2**attempt)
                 time.sleep(delay)
 
-        # Step 7-8: Execute and parse result (with session-dead retry)
+        # Step 6-7: Execute and parse result (with session-dead retry)
         return self._execute_with_retry(
             session_name=session_name,
-            artifact=artifact,
+            manifest=manifest,
+            secrets=secrets,
+            args=args,
+            kwargs=kwargs,
+            debug=debug,
         )
 
     # ------------------------------------------------------------------
@@ -180,11 +194,11 @@ class ExecutionEngine:
         session_name: str,
         gpu: str | None,
         manifest: ExecutionManifest,
-        artifact: Artifact,
     ) -> None:
-        """Ensure the session is alive and the artifact is uploaded.
+        """Ensure the session is alive and requirements are installed.
 
-        Steps 4-6 in the pipeline.
+        Source files are delivered inline in the wrapper code, so
+        no artifact upload is needed.
         """
         # Step 4: Ensure session exists
         self._session.ensure_session(session_name, gpu)
@@ -197,79 +211,215 @@ class ExecutionEngine:
                 manifest.requirements,
             )
 
-        # Step 6: Upload the artifact
-        remote_path = f"/content/.colab-client/artifacts/{artifact.hash}/artifact.tar.gz"
-        self._session.upload(session_name, str(artifact.path), remote_path)
-
     def _execute_with_retry(
         self,
         session_name: str,
-        artifact: Artifact,
+        manifest: ExecutionManifest,
+        secrets: dict[str, str],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+        *,
+        debug: bool = False,
     ) -> Any:
-        """Execute the artifact on the VM and parse the result.
+        """Execute the function on the VM and parse the result.
 
         Retries once if the session is dead (creates a fresh session).
 
+        The execution is done by sending a Python script via
+        ``colab exec`` stdin that:
+            1. Writes all source files to the VM filesystem (via base64)
+            2. Injects secrets
+            3. Imports and calls the target function
+            4. Emits the result via the ``__LAZY_*`` protocol
+
         Args:
             session_name: Colab VM session name.
-            artifact: The packaged artifact.
+            manifest: The execution manifest.
+            secrets: Environment variables to inject.
+            args: Positional arguments for the remote function.
+            kwargs: Keyword arguments for the remote function.
+            debug: If ``True``, print raw VM output.
 
         Returns:
             The deserialised return value.
-
-        Raises:
-            RemoteExecutionError: If the remote function raises.
-            ProtocolError: If the output protocol is malformed.
         """
-        # Construct the remote runner path
-        runner_path = (
-            f"/content/.colab-client/artifacts/{artifact.hash}/runner.py"
+        wrapper = self._build_wrapper(
+            manifest=manifest,
+            secrets=secrets,
+            args=args,
+            kwargs=kwargs,
         )
 
-        for attempt in range(2):  # At most one retry for session death
+        for attempt in range(2):
             try:
-                return self._execute_and_parse(session_name, runner_path)
+                return self._execute_and_parse(session_name, wrapper, debug=debug)
             except SessionDeadError:
                 if attempt == 1:
                     raise
-                # Session died — recreate and retry once
                 self._session.start(session_name)
 
-        # Shouldn't be reached, but satisfies the return type
-        raise RuntimeError("Unexpected: execution retry loop exhausted")  # pragma: no cover
+        raise RuntimeError(  # pragma: no cover
+            "Unexpected: execution retry loop exhausted"
+        )
 
     def _execute_and_parse(
         self,
         session_name: str,
-        runner_path: str,
+        wrapper_code: str,
+        *,
+        debug: bool = False,
     ) -> Any:
-        """Execute the runner on the VM and parse the stream.
+        """Send wrapper code to the VM and parse the streamed result.
 
         Args:
             session_name: Colab VM session name.
-            runner_path: Path to ``runner.py`` on the VM.
+            wrapper_code: Python source code to execute on the VM.
+            debug: If ``True``, print every raw line from the VM.
 
         Returns:
             The deserialised return value.
-
-        Raises:
-            RemoteExecutionError: If the remote function raised.
-            ProtocolError: If the output protocol is malformed.
-            SessionDeadError: If the session is dead.
         """
-        stream = self._session.execute(session_name, runner_path)
+        stream = self._session.run_code(session_name, wrapper_code)
         gen = classify(stream)
 
         try:
             while True:
-                next(gen)
-                # LogMessage and ProgressMessage are yielded in real-time.
-                # Forwarding to callbacks will be added in v0.2.
+                msg = next(gen)
+                if debug:
+                    _debug_print(msg)
         except StopIteration as exc:
             result_msg: ResultMessage = exc.value
+            if debug:
+                print(
+                    f"[colab-raw] __LAZY_RESULT__: {result_msg.value!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return result_msg.value
+        except RemoteExecutionError:
+            # Debug-print the raw error lines, then re-raise
+            if debug:
+                print(
+                    "[colab-raw] <<< Remote function raised an error >>>",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            raise
         except SessionError as exc:
-            # SessionError during execution → session might be dead
             if "dead" in str(exc).lower() or "not found" in str(exc).lower():
                 raise SessionDeadError(str(exc)) from exc
             raise
+
+    # ------------------------------------------------------------------
+    # Wrapper code generation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_wrapper(
+        manifest: ExecutionManifest,
+        secrets: dict[str, str],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+    ) -> str:
+        """Build a self-contained Python wrapper for the Colab VM.
+
+        The wrapper:
+        1. Creates directories and writes all source files (base64-encoded)
+        2. Adds the source directory to ``sys.path``
+        3. Injects secrets
+        4. Imports and calls the target function
+        5. Emits ``__LAZY_RESULT__`` or ``__LAZY_ERROR__``
+
+        No ``colab upload`` is needed — everything is sent via stdin.
+        """
+        module_path = _entry_point_to_module(manifest.entry_point)
+
+        # ---- Build file-writing preamble ---------------------------------
+        write_lines: list[str] = []
+        base_dir = "/content/colab-files"
+
+        for file_path in sorted(manifest.files, key=str):
+            resolved = (
+                file_path.resolve()
+                if not file_path.is_absolute()
+                else file_path
+            )
+            if not resolved.exists():
+                continue
+
+            content = resolved.read_bytes()
+            encoded = base64.b64encode(content).decode("ascii")
+
+            # Destination path on the VM (preserve relative structure)
+            dest = f"{base_dir}/{file_path.as_posix()}"
+            parent = str(Path(dest).parent)
+
+            write_lines.append(f'os.makedirs("{parent}", exist_ok=True)')
+            write_lines.append(
+                f'with open("{dest}", "wb") as _f: '
+                f'_f.write(base64.b64decode("{encoded}"))'
+            )
+
+        file_preamble = "\n".join(write_lines)
+
+        # ---- Secrets -----------------------------------------------------
+        secret_lines = ""
+        if secrets:
+            secret_lines = "\n".join(
+                f'os.environ["{k}"] = {json.dumps(v)}'
+                for k, v in secrets.items()
+            )
+            secret_lines += "\n"
+
+        # ---- Args / kwargs ----------------------------------------------
+        args_json = json.dumps(list(args))
+        kwargs_json = json.dumps(kwargs)
+
+        # ---- Assemble wrapper -------------------------------------------
+        return f"""import base64, json, os, sys, traceback
+
+# ---------------------------------------------------------------------------
+# 1. Write source files on the VM
+# ---------------------------------------------------------------------------
+{file_preamble}
+sys.path.insert(0, "{base_dir}")
+
+# ---------------------------------------------------------------------------
+# 2. Stdout protocol helpers
+# ---------------------------------------------------------------------------
+def _emit_result(value):
+    print(f"__LAZY_RESULT__:{{json.dumps({{'status': 'ok', 'value': value}})}}", flush=True)
+
+def _emit_error(exc):
+    tb = traceback.format_exc().splitlines(keepends=True)
+    payload = json.dumps({{
+        "status": "error",
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": tb,
+    }})
+    print(f"__LAZY_ERROR__:{{payload}}", file=sys.stderr, flush=True)
+
+# ---------------------------------------------------------------------------
+# 3. Secrets injection
+# ---------------------------------------------------------------------------
+{secret_lines}
+# ---------------------------------------------------------------------------
+# 4. Import and execute the target function
+# ---------------------------------------------------------------------------
+try:
+    from {module_path} import {manifest.function_name}
+except ImportError as e:
+    _emit_error(e)
+    sys.exit(1)
+
+_args = {args_json}
+_kwargs = {kwargs_json}
+
+try:
+    result = {manifest.function_name}(*_args, **_kwargs)
+    _emit_result(result)
+except Exception as e:
+    _emit_error(e)
+    sys.exit(1)
+"""

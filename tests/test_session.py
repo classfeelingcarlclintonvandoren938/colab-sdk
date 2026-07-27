@@ -119,11 +119,15 @@ class TestCompositeOperations:
                 mock_start.assert_not_called()
 
     def test_ensure_session_dead(self, session: ColabSession) -> None:
-        """If session is dead, ``ensure_session`` calls ``start``."""
+        """If session is dead, ``ensure_session`` calls ``start`` and then
+        verifies the session is alive with a second status check."""
         with patch.object(session, "status") as mock_status:
-            mock_status.return_value = SessionStatus(
-                alive=False, name="s", gpu=""
-            )
+            # First call (pre-start): dead
+            # Second call (post-start): alive
+            mock_status.side_effect = [
+                SessionStatus(alive=False, name="s", gpu=""),
+                SessionStatus(alive=True, name="s", gpu="T4"),
+            ]
             with patch.object(session, "start") as mock_start:
                 session.ensure_session("s", gpu="T4")
                 mock_start.assert_called_once_with("s", "T4")

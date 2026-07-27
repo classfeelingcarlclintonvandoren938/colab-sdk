@@ -149,8 +149,13 @@ class ColabSession:
             # Session is dead or doesn't exist
             return SessionStatus(alive=False, name=name, gpu="")
 
-        # Session is alive. The CLI outputs human-readable text;
-        # we return basic status without parsing GPU info for now.
+        # Exit code 0, but check the output text for dead-session indicators.
+        # The CLI may cache stale state locally and report exit 0 even when
+        # the backend session was stopped or never created.
+        output = (result.stdout + result.stderr).lower()
+        if "not found" in output or "no such session" in output:
+            return SessionStatus(alive=False, name=name, gpu="")
+
         return SessionStatus(alive=True, name=name, gpu="")
 
     # ------------------------------------------------------------------
@@ -160,13 +165,20 @@ class ColabSession:
     def ensure_session(self, name: str, gpu: str | None = None) -> None:
         """Create a session if one does not exist or is dead.
 
+        After calling ``start()``, verifies the session is actually
+        alive by calling ``status()`` again. This catches cases where
+        ``colab new`` exits 0 but the session is not fully initialised
+        or a stale name conflicts with previous state.
+
         Args:
             name: Session name.
             gpu: GPU type for a new session.
 
         Raises:
-            SessionError: If session creation fails.
-            SessionDeadError: If the existing session has a different GPU type.
+            SessionError: If session creation fails or the session
+                is not alive after creation.
+            SessionDeadError: If the existing session has a different
+                GPU type.
         """
         current = self.status(name)
         if current.alive:
@@ -179,6 +191,14 @@ class ColabSession:
             return  # Session is alive and GPU matches — no-op
 
         self.start(name, gpu)
+
+        # Verify the session is actually alive after creation
+        post = self.status(name)
+        if not post.alive:
+            raise SessionError(
+                f"Session '{name}' was created but is not responding. "
+                "Try a different session name or check your Colab quota."
+            )
 
     def ensure_requirements(
         self,
@@ -325,16 +345,61 @@ class ColabSession:
             SessionError: If execution fails or the session is dead.
         """
         cmd = ["colab", "exec", "-s", name, "-f", str(local_file)]
+        yield from self._exec(cmd)
 
+    def run_code(self, name: str, code: str) -> Generator[str, None, None]:
+        """Execute Python *code* directly on the Colab VM via stdin.
+
+        Unlike ``execute()`` (which reads a local file via ``-f``),
+        this method pipes *code* through stdin to ``colab exec``.
+        Useful for setup steps (e.g. extracting archives) or for
+        wrapping the target function call.
+
+        Args:
+            name: Session name.
+            code: Python source code to execute.
+
+        Yields:
+            Lines of stdout from the remote execution.
+
+        Raises:
+            SessionError: If execution fails or the session is dead.
+        """
+        cmd = ["colab", "exec", "-s", name]
+        yield from self._exec(cmd, stdin_data=code)
+
+    def _exec(
+        self,
+        cmd: list[str],
+        stdin_data: str | None = None,
+    ) -> Generator[str, None, None]:
+        """Shared subprocess helper for remote execution.
+
+        Args:
+            cmd: The ``colab exec`` command list.
+            stdin_data: Optional code to send via stdin.
+
+        Yields:
+            Lines of stdout from the remote execution.
+
+        Raises:
+            SessionError: On failure or missing CLI.
+        """
         try:
             with subprocess.Popen(
                 cmd,
+                stdin=subprocess.PIPE if stdin_data is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
                 env=self._env,
             ) as proc:
+                # Send stdin data if provided
+                if stdin_data is not None and proc.stdin:
+                    proc.stdin.write(stdin_data)
+                    proc.stdin.close()
+
                 # Yield stdout lines in real-time
                 if proc.stdout:
                     for line in proc.stdout:

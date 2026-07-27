@@ -48,8 +48,7 @@ def mock_packager() -> MagicMock:
 def mock_session() -> MagicMock:
     """Mock ``ColabSession`` with no-op methods."""
     mock = MagicMock()
-    # execute() returns a generator that yields nothing and completes
-    mock.execute.return_value = iter([])
+    mock.run_code.return_value = iter([])
     return mock
 
 
@@ -67,6 +66,11 @@ def engine(
     )
 
 
+# ======================================================================
+# Construction
+# ======================================================================
+
+
 class TestConstruction:
     """Engine creation with dependency injection."""
 
@@ -81,6 +85,11 @@ class TestConstruction:
         assert eng._analyzer is mock_analyzer
         assert eng._packager is mock_packager
         assert eng._session is mock_session
+
+
+# ======================================================================
+# Validate
+# ======================================================================
 
 
 class TestValidate:
@@ -101,8 +110,13 @@ class TestValidate:
             ExecutionEngine._validate("RTX_4090")
 
 
+# ======================================================================
+# PrepareSession
+# ======================================================================
+
+
 class TestPrepareSession:
-    """The ``_prepare_session`` internal helper."""
+    """The ``_prepare_session`` internal helper (no upload step)."""
 
     def test_calls_ensure_session(
         self,
@@ -113,11 +127,8 @@ class TestPrepareSession:
         manifest = MagicMock()
         manifest.requirements = ["torch"]
         manifest.requirements_hash = "abc"
-        artifact = MagicMock()
-        artifact.hash = "def"
-        artifact.path = Path("/tmp/a.tar.gz")
 
-        engine._prepare_session("s", "T4", manifest, artifact)
+        engine._prepare_session("s", "T4", manifest)
         mock_session.ensure_session.assert_called_once_with("s", "T4")
 
     def test_calls_ensure_requirements_with_packages(
@@ -129,11 +140,8 @@ class TestPrepareSession:
         manifest = MagicMock()
         manifest.requirements = ["torch", "numpy"]
         manifest.requirements_hash = "abc123"
-        artifact = MagicMock()
-        artifact.hash = "def"
-        artifact.path = Path("/tmp/a.tar.gz")
 
-        engine._prepare_session("s", None, manifest, artifact)
+        engine._prepare_session("s", None, manifest)
         mock_session.ensure_requirements.assert_called_once_with(
             "s", "abc123", ["torch", "numpy"]
         )
@@ -146,33 +154,26 @@ class TestPrepareSession:
         """With empty requirements, ``ensure_requirements`` is NOT called."""
         manifest = MagicMock()
         manifest.requirements = []
-        artifact = MagicMock()
-        artifact.hash = "def"
-        artifact.path = Path("/tmp/a.tar.gz")
 
-        engine._prepare_session("s", None, manifest, artifact)
+        engine._prepare_session("s", None, manifest)
         mock_session.ensure_requirements.assert_not_called()
 
-    def test_calls_upload(
+    def test_no_upload_called(
         self,
         engine: ExecutionEngine,
         mock_session: MagicMock,
     ) -> None:
-        """``_prepare_session`` uploads the artifact."""
+        """No upload happens during prepare (files are inlined in wrapper)."""
         manifest = MagicMock()
         manifest.requirements = []
-        artifact = MagicMock()
-        artifact.hash = "myhash"
-        artifact.path = Path("/local/artifact.tar.gz")
 
-        engine._prepare_session("s", None, manifest, artifact)
-        expected_remote = "/content/.colab-client/artifacts/myhash/artifact.tar.gz"
-        # Normalize paths for cross-platform comparison
-        mock_session.upload.assert_called_once()
-        call_args = mock_session.upload.call_args[0]
-        assert call_args[0] == "s"
-        assert Path(call_args[1]) == artifact.path
-        assert call_args[2] == expected_remote
+        engine._prepare_session("s", None, manifest)
+        mock_session.upload.assert_not_called()
+
+
+# ======================================================================
+# ExecuteAndParse
+# ======================================================================
 
 
 class TestExecuteAndParse:
@@ -184,15 +185,14 @@ class TestExecuteAndParse:
         mock_session: MagicMock,
     ) -> None:
         """Valid execution returns the remote function's return value."""
-        # Build a proper result stream
         import json
 
         payload = json.dumps({"status": "ok", "value": 42})
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             f"__LAZY_RESULT__:{payload}",
         ]
 
-        result = engine._execute_and_parse("s", "/runner.py")
+        result = engine._execute_and_parse("s", "wrapper_code")
         assert result == 42
 
     def test_raises_on_error(
@@ -207,14 +207,14 @@ class TestExecuteAndParse:
             "status": "error",
             "type": "ValueError",
             "message": "bad things",
-            "traceback": ["  File \"runner.py\", line 1\n"],
+            "traceback": ['  File "runner.py", line 1\n'],
         })
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             f"__LAZY_ERROR__:{payload}",
         ]
 
         with pytest.raises(RemoteExecutionError, match="ValueError: bad things"):
-            engine._execute_and_parse("s", "/runner.py")
+            engine._execute_and_parse("s", "wrapper_code")
 
     def test_protocol_error_propagates(
         self,
@@ -222,30 +222,17 @@ class TestExecuteAndParse:
         mock_session: MagicMock,
     ) -> None:
         """Malformed protocol raises ``ProtocolError``."""
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             "__LAZY_RESULT__:{bad json}",
         ]
 
         with pytest.raises(ProtocolError):
-            engine._execute_and_parse("s", "/runner.py")
+            engine._execute_and_parse("s", "wrapper_code")
 
-    def test_session_dead_retried(
-        self,
-        engine: ExecutionEngine,
-        mock_session: MagicMock,
-    ) -> None:
-        """Session dead during execute triggers retry (creates new session)."""
-        import json
 
-        payload = json.dumps({"status": "ok", "value": "recovered"})
-        mock_session.execute.side_effect = [
-            SessionDeadError("session is dead"),
-            [f"__LAZY_RESULT__:{payload}"],
-        ]
-
-        result = engine._execute_with_retry("s", MagicMock(hash="h"))
-        assert result == "recovered"
-        mock_session.start.assert_called_once_with("s")
+# ======================================================================
+# ExecuteWithRetry
+# ======================================================================
 
 
 class TestExecuteWithRetry:
@@ -259,12 +246,22 @@ class TestExecuteWithRetry:
         """If the first execute attempt succeeds, no retry."""
         import json
 
+        manifest = MagicMock()
+        manifest.entry_point = Path("app.py")
+        manifest.function_name = "train"
+        manifest.files = [Path("app.py")]
         payload = json.dumps({"status": "ok", "value": "success"})
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             f"__LAZY_RESULT__:{payload}",
         ]
 
-        result = engine._execute_with_retry("s", MagicMock(hash="h"))
+        result = engine._execute_with_retry(
+            session_name="s",
+            manifest=manifest,
+            secrets={},
+            args=(),
+            kwargs={},
+        )
         assert result == "success"
 
     def test_retries_on_session_dead(
@@ -275,17 +272,31 @@ class TestExecuteWithRetry:
         """On ``SessionDeadError``, engine restarts session and retries."""
         import json
 
+        manifest = MagicMock()
+        manifest.entry_point = Path("app.py")
+        manifest.function_name = "train"
+        manifest.files = [Path("app.py")]
         payload = json.dumps({"status": "ok", "value": "recovered"})
 
-        # First call raises SessionDeadError, second succeeds
-        mock_session.execute.side_effect = [
+        mock_session.run_code.side_effect = [
             SessionDeadError("session gone"),
             [f"__LAZY_RESULT__:{payload}"],
         ]
 
-        result = engine._execute_with_retry("s", MagicMock(hash="h"))
+        result = engine._execute_with_retry(
+            session_name="s",
+            manifest=manifest,
+            secrets={},
+            args=(),
+            kwargs={},
+        )
         assert result == "recovered"
         mock_session.start.assert_called_once_with("s")
+
+
+# ======================================================================
+# Execute (full pipeline)
+# ======================================================================
 
 
 class TestExecute:
@@ -302,7 +313,7 @@ class TestExecute:
         import json
 
         payload = json.dumps({"status": "ok", "value": "done"})
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             f"__LAZY_RESULT__:{payload}",
         ]
 
@@ -322,7 +333,9 @@ class TestExecute:
         mock_analyzer.analyze.assert_called_once_with("train", Path("app.py"))
         mock_packager.build.assert_called_once()
         mock_session.ensure_session.assert_called_once_with("my-session", "T4")
-        mock_session.execute.assert_called_once()
+        mock_session.run_code.assert_called_once()
+        # No upload should happen
+        mock_session.upload.assert_not_called()
 
     def test_validate_before_analyze(
         self,
@@ -347,7 +360,7 @@ class TestExecute:
         import json
 
         payload = json.dumps({"status": "ok", "value": "done"})
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             f"__LAZY_RESULT__:{payload}",
         ]
         mock_session.ensure_session.side_effect = SessionGpuMismatchError(
@@ -370,7 +383,7 @@ class TestExecute:
         import json
 
         payload = json.dumps({"status": "ok", "value": "done"})
-        mock_session.execute.return_value = [
+        mock_session.run_code.return_value = [
             f"__LAZY_RESULT__:{payload}",
         ]
         mock_session.ensure_session.side_effect = AuthError("authentication failed")
