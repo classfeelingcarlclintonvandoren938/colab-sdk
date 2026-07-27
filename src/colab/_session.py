@@ -426,7 +426,9 @@ class ColabSession:
         )
         yield from self._exec(cmd)
 
-    def run_code(self, name: str, code: str, *, timeout: int | None = None) -> Generator[str, None, None]:
+    def run_code(
+        self, name: str, code: str, *, timeout: int | None = None
+    ) -> Generator[str, None, None]:
         """Execute Python *code* directly on the Colab VM via stdin.
 
         Unlike ``execute()`` (which reads a local file via ``-f``),
@@ -495,11 +497,12 @@ class ColabSession:
 
                 if returncode != 0:
                     raise SessionError(
-                        f"Execution failed (exit code {returncode}):\n{stderr_output}"
+                        "Execution failed (exit code %s):\n%s"
+                        % (returncode, stderr_output)
                     )
         except subprocess.TimeoutExpired:
             raise SessionError(
-                f"Execution timed out after {timeout} seconds."
+                "Execution timed out after %s seconds." % timeout
             ) from None
         except FileNotFoundError:
             msg = (

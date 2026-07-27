@@ -4,12 +4,11 @@ All subprocess calls are mocked to avoid requiring the actual
 ``google-colab-cli`` tool.
 """
 
-from collections.abc import Generator
 import os
 import subprocess
-import sys
+from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -122,7 +121,7 @@ class TestWSLBuildCmd:
                 with patch(
                     "colab._session.subprocess.run",
                     return_value=MagicMock(returncode=0),
-                ) as mock_run:
+                ):
                     s1 = ColabSession()
                     s2 = ColabSession()
                     # Subsequent sessions should also work
@@ -293,7 +292,7 @@ class TestFileOperations:
 
     def test_download(self, session: ColabSession) -> None:
         """``download()`` returns a Path."""
-        with patch.object(session, "_run") as mock_run:
+        with patch.object(session, "_run"):
             result = session.download("s", "/remote/file.txt", "local.txt")
             assert isinstance(result, Path)
 
