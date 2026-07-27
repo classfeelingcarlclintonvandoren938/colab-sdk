@@ -1,6 +1,5 @@
 """Shared pytest fixtures for Colab Client tests."""
 
-import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path

@@ -205,8 +205,8 @@ class TestPackager:
 
 def _extract_runner(artifact_path: Path) -> str:
     """Extract and return the content of ``runner.py`` from a tar.gz artifact."""
-    import tarfile
     import io
+    import tarfile
 
     with gzip.open(artifact_path, "rb") as f:
         tar_bytes = f.read()
@@ -220,8 +220,8 @@ def _extract_runner(artifact_path: Path) -> str:
 
 def _extract_metadata(artifact_path: Path) -> dict[str, object]:
     """Extract and return the ``metadata.json`` dict from a tar.gz artifact."""
-    import tarfile
     import io
+    import tarfile
 
     with gzip.open(artifact_path, "rb") as f:
         tar_bytes = f.read()
