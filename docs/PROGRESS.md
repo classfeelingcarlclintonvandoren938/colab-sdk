@@ -153,9 +153,61 @@
 - `99ebf3d` — `_engine.py`
 - `7a3665e` — `test_protocol.py` + `test_engine.py`
 
-## Next Session — Ready to Implement
+## Session 6 — Integration Test, Debug Mode & Code Cleanup
 
-**Priority order:**
+**Date:** 2026-07-27
+
+**Completed:**
+
+### `App` + `RemoteFunction` (SDK Entry Point)
+- `_app.py` — `App` class with GPU validation, idle_timeout, secrets, `@app.function` decorator
+- `_function.py` — `RemoteFunction` handle with `.remote(debug=False)` method
+- `test_app.py` — 21 tests covering construction, decorator, remote execution, lifecycle, file transfer, secrets
+
+### `_app.py` — File Transfer & Lifecycle
+- `app.upload()` / `app.download()` — convenience wrappers creating session lazily
+- `app.login()` — idempotent auth trigger
+- `app.shutdown()` — idempotent session termination
+
+### `_analyzer.py` — Relative Paths & Exclude Packages
+- `exclude_packages` parameter to skip SDK internals from dependency analysis
+- `manifest.files` now stores **relative** paths (consistent with `entry_point` & docstring)
+- `__future__` added to `_STDLIB_MODULES`
+
+### `_session.py` — Robust Session Management
+- `status()`: checks output text for "not found"/"no such session" strings (catches stale cache)
+- `ensure_session()`: verifies session is alive after creation with a second status call
+- `run_code()`: pipes Python code via stdin to `colab exec` (no temp file needed)
+- `_exec()`: shared subprocess helper supporting both file-based and stdin-based execution
+
+### `_engine.py` — Inline File Execution & Debug Mode
+- **Switched from artifact upload to inline delivery**: source files are base64-encoded
+  and embedded in the wrapper code sent via `colab exec` stdin
+- Executes without any `colab upload` dependency in the hot path
+- `debug=True` prints all raw VM output to stderr with `[colab-raw]` prefix
+- `_build_wrapper()` generates self-contained Python script that writes files,
+  injects secrets, imports the target function, and emits `__LAZY_*` markers
+- Removed dead `Packager` dependency (artifact `build()` result was never used)
+
+### Integration Test — End-to-End Verification
+- `examples/integration_test.py` — full pipeline test against real Colab:
+  - `hello_fn.remote()` → `'Hello from Colab!'` (19.4s incl. VM boot)
+  - `add_fn.remote(40, 2)` → `42` (2.0s, session reuse)
+  - `train_fn.remote(epochs=5, lr=0.001)` → `{'done': True, ...}` (2.4s)
+- Pure functions defined at module level (no SDK dependency on the VM)
+
+### Total: 126 tests, all passing
+
+### Commit Hashes
+- `50966fa` — App + RemoteFunction
+- `c65131f` — Relative paths in manifest.files
+- `2958095` — Inline execution, session fixes, debug mode
+- `bfd6e15` — Integration test example
+- `f5fcb59` — Remove dead Packager dependency from Engine
+
+## Next Steps
+
+### Done (MVP complete)
 
 1. ✅ Project setup: `pyproject.toml`, `src/colab/`, `tests/`
 2. ✅ `ExecutionManifest` model (frozen dataclass)
@@ -166,7 +218,15 @@
 6. ✅ `_protocol.py` + `ExecutionEngine` (stdout parser + pipeline orchestration)
 7. ✅ `test_protocol.py` + `test_engine.py`
 8. ✅ `App` + `RemoteFunction` (SDK entry point, decorator)
-9. Manual Colab integration test
+9. ✅ Manual Colab integration test (all 3 functions passed)
+
+### Future features (see `docs/future_implement.md`)
+
+| Tier | Feature |
+|---|---|
+| 1 | `@app.cls()` — Stateful classes, `fn.spawn()` — Non-blocking, `fn.map()` — Parallel, Volumes — Persistent storage |
+| 2 | `@app.web()` — HTTP endpoints, Named secrets, Multiple sessions, Background jobs, Progress callbacks |
+| 3 | Cache visualization, Colab Pro+, Model registry, Artifact browser, Function chaining, Environment setup, Session snapshots, Collaborative sessions |
 
 ## Known Decisions (not to be reopened)
 
