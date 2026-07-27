@@ -53,7 +53,7 @@
 
 **Completed:**
 - Changed import from `from colab_client import App` → `from colab import App`
-- PyPI package: `colab-client`, Python namespace: `colab`
+- PyPI package: `colab-sdk`, Python namespace: `colab`
 - Created `docs/future_implement.md` — deferred features catalog (Tiers 1-3)
 - Added `app.upload()`, `app.download()`, `app.secret()` to App and Session SPECs
 - Updated all documentation to use new import path
@@ -236,6 +236,6 @@
 - tar.gz artifact format. No inline source.
 - stdout protocol with __LAZY_* markers.
 - Import: `from colab import App`.
-- PyPI package: `colab-client`.
+- PyPI package: `colab-sdk`.
 - Unit tests only for MVP. Manual Colab testing.
 - Future features documented in `docs/future_implement.md`.

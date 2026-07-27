@@ -1,4 +1,4 @@
-# Coding Standards — Colab Client
+# Coding Standards — Colab SDK
 
 > Tech stack, code conventions, and patterns.
 
@@ -26,7 +26,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "colab-client"
+name = "colab-sdk"
 dynamic = ["version"]
 description = "A Python SDK that turns Google Colab into a remote compute runtime."
 readme = "README.md"

@@ -1,4 +1,4 @@
-# Product Requirements Document — Colab Client
+# Product Requirements Document — Colab SDK
 
 > A Python SDK that turns Google Colab into a remote compute runtime.
 
@@ -113,7 +113,7 @@ These statements **must always be true**. Every ADR and implementation must resp
 ## 10. User Experience
 
 ```python
-from colab_client import App
+from colab import App
 
 app = App()
 
@@ -184,7 +184,7 @@ A new developer can:
 | Field | Value |
 |---|---|
 | Brand | Colab Client |
-| Repository | `colab-client` |
+| Repository | `colab-sdk` |
 | Python package | `colab` (import: `from colab import App`) |
 | Dependencies | `google-colab-cli` |
 | Python version | 3.10+ |

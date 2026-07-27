@@ -4,7 +4,7 @@
 
 **A Python SDK that turns Google Colab into a remote compute runtime.**
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.1.0-blue.svg)](https://pypi.org/project/colab-client/)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.1.0-blue.svg)](https://pypi.org/project/colab-sdk/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-green.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen.svg)](docs/PROGRESS.md)
@@ -33,7 +33,7 @@ print(result)  # {'done': True, 'epochs': 10}
 
 ## Table of Contents
 
-- [Why Colab Client?](#why-colab-client)
+- [Why Colab SDK?](#why-colab-sdk)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
@@ -48,7 +48,7 @@ print(result)  # {'done': True, 'epochs': 10}
 
 ---
 
-## Why Colab Client?
+## Why Colab SDK?
 
 Google Colab provides **free GPU compute** (T4, L4, A100) — but the developer experience is stuck in notebooks. You need to manually upload files, manage cells, and deal with a browser-based workflow. Modern cloud compute platforms like Modal and RunPod solve this, but they're paid.
 
@@ -84,14 +84,14 @@ Google Colab provides **free GPU compute** (T4, L4, A100) — but the developer 
 ### Install from PyPI
 
 ```bash
-pip install colab-client
+pip install colab-sdk
 ```
 
 ### Install from Source
 
 ```bash
-git clone https://github.com/heyncth/colab-client.git
-cd colab-client
+git clone https://github.com/heyncth/colab-sdk.git
+cd colab-sdk
 pip install -e .
 ```
 
@@ -115,7 +115,7 @@ pip install -e ".[dev]"
 3. **Install Python and the SDK:**
    ```bash
    sudo apt update && sudo apt install python3 python3-pip -y
-   pip install colab-client
+   pip install colab-sdk
    ```
 
 4. **Authenticate with Google Colab:**
@@ -438,7 +438,7 @@ Colab Client consists of six components, each with a single responsibility:
 | **GPU types** | A100, H100, L40S | A100, H100, RTX | T4, L4, A100 (Pro) |
 | **Max session** | 24h (default) | Configurable | 24h (Colab limit) |
 | **Stateful classes** | `@app.cls()` | N/A | Planned ([Tier 1](docs/future_implement.md)) |
-| **`pip install`** | `modal` | Custom | `colab-client` |
+| **`pip install`** | `modal` | Custom | `colab-sdk` |
 
 ---
 
@@ -509,8 +509,8 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 ### Quick Start for Contributors
 
 ```bash
-git clone https://github.com/heyncth/colab-client.git
-cd colab-client
+git clone https://github.com/heyncth/colab-sdk.git
+cd colab-sdk
 pip install -e ".[dev]"
 pytest tests/
 ```
@@ -519,7 +519,7 @@ pytest tests/
 
 ## License
 
-MIT © [Contributors](https://github.com/heyncth/colab-client/graphs/contributors)
+MIT © [Contributors](https://github.com/heyncth/colab-sdk/graphs/contributors)
 
 ---
 
@@ -527,6 +527,6 @@ MIT © [Contributors](https://github.com/heyncth/colab-client/graphs/contributor
 
 **Made for the free GPU community** ❤️
 
-[GitHub](https://github.com/heyncth/colab-client) · [Issues](https://github.com/heyncth/colab-client/issues) · [Discussions](https://github.com/heyncth/colab-client/discussions)
+[GitHub](https://github.com/heyncth/colab-sdk) · [Issues](https://github.com/heyncth/colab-sdk/issues) · [Discussions](https://github.com/heyncth/colab-sdk/discussions)
 
 </div>

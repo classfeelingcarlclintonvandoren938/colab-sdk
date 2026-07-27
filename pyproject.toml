@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "colab-client"
+name = "colab-sdk"
 version = "0.1.0"
 description = "A Python SDK that turns Google Colab into a remote compute runtime."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Colab Client Contributors"},
+    {name = "Colab SDK Contributors"},
 ]
 
 dependencies = [

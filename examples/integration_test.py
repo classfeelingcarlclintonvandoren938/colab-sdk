@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Colab Client — Integration Test (manual)
+Colab SDK — Integration Test (manual)
 
 Run this script from WSL2 (or any Linux/macOS) with a working
 ``google-colab-cli`` installation.  It exercises the full SDK pipeline:
@@ -11,12 +11,12 @@ Run this script from WSL2 (or any Linux/macOS) with a working
     4. Session reuse on consecutive calls
 
 Prerequisites:
-    - ``colab-client`` installed (``pip install -e .``)
+    - ``colab-sdk`` installed (``pip install -e .``)
     - ``google-colab-cli`` installed (``pip install google-colab-cli``)
     - Authenticated (``uv tool install google-colab-cli --with jupyter-kernel-client==0.9.0``)
 
 Usage:
-    cd /path/to/colab-client
+    cd /path/to/colab-sdk
     python examples/integration_test.py
 """
 

@@ -1,4 +1,4 @@
-# Contributing — Colab Client
+# Contributing — Colab SDK
 
 > How to contribute to the project.
 
@@ -7,8 +7,8 @@
 ## Getting Started
 
 ```bash
-git clone https://github.com/<org>/colab-client
-cd colab-client
+git clone https://github.com/heyncth/colab-sdk
+cd colab-sdk
 pip install -e ".[dev]"
 ```
 
