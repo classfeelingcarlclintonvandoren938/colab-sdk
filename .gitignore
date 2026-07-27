@@ -26,3 +26,7 @@ Thumbs.db
 
 # Project
 *.tar.gz
+
+# Windows reserved device names (created by 2>nul redirect)
+nul
+NUL
