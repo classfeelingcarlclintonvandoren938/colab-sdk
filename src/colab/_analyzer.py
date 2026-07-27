@@ -25,6 +25,7 @@ _STDLIB_MODULES: frozenset[str] = frozenset({
     "socket", "sqlite3", "ssl", "statistics", "string", "struct",
     "subprocess", "sys", "tarfile", "tempfile", "textwrap", "threading",
     "time", "timeit", "traceback", "tracemalloc", "types", "typing",
+    "__future__",
     "unittest", "urllib", "uuid", "warnings", "weakref", "xml",
     "xmlrpc", "zipfile", "zipimport", "zlib", "zoneinfo",
 })
@@ -42,13 +43,21 @@ class Analyzer:
         manifest = analyzer.analyze("train", Path("app.py"))
     """
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        exclude_packages: frozenset[str] | None = None,
+    ) -> None:
         """Initialize the analyzer with the project root directory.
 
         Args:
             project_root: Absolute or relative path to the project root.
+            exclude_packages: Set of top-level package names to silently skip.
+                These are neither traced into nor added to requirements.
+                Useful for excluding SDK-internal packages from analysis.
         """
         self._root = project_root.resolve()
+        self._exclude_packages = exclude_packages or frozenset()
         self._visited: set[Path] = set()
         self._warnings: list[str] = []
         # Track module names confirmed as external during resolution
@@ -112,7 +121,7 @@ class Analyzer:
         return ExecutionManifest(
             function_name=function_name,
             entry_point=_relpath(source, self._root),
-            files=sorted(set(files)),
+            files=sorted(set(_relpath(f, self._root) for f in files)),
             requirements=sorted(requirements),
             warnings=list(self._warnings),
         )
@@ -143,11 +152,14 @@ class Analyzer:
 
         # --- Absolute imports (local or external) -----------------------
         for module in imports["absolute"]:
+            top = module.split(".", 1)[0]
+            if top in self._exclude_packages:
+                # SDK-internal package — skip silently
+                continue
             resolved = self._resolve_absolute_local(module)
             if resolved is not None:
                 collected.extend(self._resolve_recursive(resolved))
             else:
-                top = module.split(".", 1)[0]
                 if top not in _STDLIB_MODULES:
                     self._external_imports.add(top)
 
