@@ -44,5 +44,5 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 
 [project.urls]
-Homepage = "https://github.com/colab-client/colab-client"
-Source = "https://github.com/colab-client/colab-client"
+Homepage = "https://github.com/heyncth/colab-client"
+Source = "https://github.com/heyncth/colab-client"
