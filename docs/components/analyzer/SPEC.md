@@ -6,9 +6,9 @@
 
 ## Input
 
-`analyzer.analyze(function: RemoteFunction) -> ExecutionManifest`
+`analyzer.analyze(function_name: str, source_file: Path) -> ExecutionManifest`
 
-The function's source file is located, parsed, and analyzed recursively.
+The source file is located, parsed, and analyzed recursively. The function name is recorded in the manifest for the packager to embed in `runner.py`.
 
 ## Output
 
@@ -71,6 +71,12 @@ The analyzer uses `ast.Import` and `ast.ImportFrom` nodes. It does **not** evalu
 
 Uses `importlib.util.find_spec(module_name)` to determine if a module is local (returns a spec with `origin` in the project directory) or external (returns a spec with `origin` in `site-packages`).
 
+### sys.path Management
+
+The project root is temporarily added to `sys.path` at position 0 so that `find_spec` can resolve modules in `src/`-layout projects. After analysis:
+- `sys.path` is **fully restored** via `sys.path[:] = saved_path` (not individual `remove()` calls)
+- Modules added to `sys.modules` by `find_spec`'s parent-package resolution are **deleted** — prevents stale spec references if the same module name is resolved against a different project root later
+
 ---
 
 ## Special Cases
@@ -100,6 +106,17 @@ else:
 - Includes **both** branches' dependencies
 - Safer than trying to determine which branch is active (impossible statically)
 - May include unnecessary files, but guarantees correctness
+
+### Relative import (`from . import foo`)
+
+```python
+# mypkg/__init__.py
+from . import sibling
+```
+
+- Handles `from . import foo` where AST `ImportFrom.node.module` is `None` and `node.level >= 1`
+- Constructs the relative module name as `"." * level + alias.name` (e.g. `".sibling"`)
+- Resolved via the same relative-import resolution path as explicit `from .sub import X`
 
 ### Dynamic import (`importlib.import_module()`)
 

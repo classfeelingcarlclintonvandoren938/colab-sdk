@@ -70,19 +70,63 @@
 - `.gitignore` — standard Python ignores
 - Verified: pip install -e .[dev], ruff check, ruff format
 
+## Session 4 — Tests, Fixes & CLI Verification
+
+**Date:** 2026-07-27
+
+**Completed:**
+
+### Tests
+- `tests/conftest.py` — shared fixtures (tmp_project, platform mocking)
+- `test_manifest.py` — ExecutionManifest creation, immutability, hash computation (8 tests)
+- `test_exceptions.py` — exception hierarchy, inheritance, message preservation (5 tests)
+- `test_analyzer.py` — AST parsing, import resolution, circular deps, wildcards, edge cases (10 tests)
+- `test_packager.py` — deterministic hashing, runner generation, caching, metadata (8 tests)
+- `test_session.py` — CLI wrapper, subprocess mocking, session lifecycle, error handling (15 tests)
+
+**Total: 56 tests, all passing**
+
+### Analyzer Fixes
+- `sys.path` management: changed from fragile `insert`/`remove` to **save-and-restore** (`sys.path[:] = saved_path`) — eliminates test pollution
+- `sys.modules` cleanup: removes newly cached modules after analysis to prevent stale `find_spec` results across multiple `Analyzer` instances with different project roots
+- `_parse_imports`: fixed handling of `from . import foo` (AST `ImportFrom` with `node.module is None`, `node.level >= 1`) — sibling modules in `__init__.py` are now correctly resolved
+- Removed dead code (`_FINDER` cache, `_get_finder()`)
+- Removed unused `importlib.machinery.PathFinder` approach (doesn't handle dotted submodule names)
+
+### Session Fixes
+- **Windows guard**: `ColabSession.__init__` raises clear `SessionError` on `sys.platform == "win32"` (colab-cli requires WSL2)
+- **Dotenv support**: `__init__` loads `.env`, reads `COLAB_BIN_DIR`, extends `PATH` for all subprocess calls
+- **`status()`**: removed undocumented `--json` flag — uses exit code for alive/dead detection
+- **`ensure_requirements()`**: replaced undocumented `-c` flag with temp file + `colab exec -f` — confirmed working against actual CLI
+- Removed unused `json` import
+
+### CLI Verification
+- Installed `google-colab-cli` in WSL and confirmed all command flags via `--help`
+- Verified: `colab exec` only supports `-f <file>`, not `-c <code>` or stdin pipe
+- Verified: `colab status` has no `--json` flag
+- Added `.env.example` with `COLAB_BIN_DIR` docs
+- Added Windows Setup (WSL2) instructions to `README.md`
+
+### Commit Hashes
+- `bed36db` → `3117ed0` (amended dates for realistic timeline)
+- `d148c19` — analyzer/session fixes + WSL2 docs
+- `f64dd3a` — dotenv support
+- `93f5b78` — temp file for colab exec probe
+- `3a7da0e` — unit tests for all components + analyzer sys.modules fix
+
 ## Next Session — Ready to Implement
 
 **Priority order:**
 
 1. ✅ Project setup: `pyproject.toml`, `src/colab/`, `tests/`
 2. ✅ `ExecutionManifest` model (frozen dataclass)
-2b. ✅ `_exceptions.py` — custom exception hierarchy (ColabClientError base + 9 specific types)
+2b. ✅ `_exceptions.py` — custom exception hierarchy
 3. ✅ `Analyzer` component (AST-based import resolution)
 4. ✅ `Packager` component (runner.py + deterministic tar.gz artifact)
 5. ✅ `ColabSession` component (google-colab-cli wrapper via subprocess)
-6. `ExecutionEngine` component (pipeline orchestration)
+6. `_protocol.py` + `ExecutionEngine` (stdout parser + pipeline orchestration)
 7. `App` + `RemoteFunction` (SDK entry point, decorator)
-8. Unit tests for each component
+8. `test_protocol.py` + `test_engine.py`
 9. Manual Colab integration test
 
 ## Known Decisions (not to be reopened)

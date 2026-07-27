@@ -40,7 +40,8 @@ build(manifest, args, kwargs)
   │     (before function import — secrets are available before the target function runs)
   │
   ├── 4. Generate metadata.json
-  │     function_name, manifest_hash, requirements_hash, gpu, timestamp
+  │     function_name, requirements_hash, requirements, gpu, args, kwargs
+  │     (No timestamp — metadata must be deterministic for artifact hash stability)
   │
   ├── 5. Generate runner.py
   │     Entry point script with:
