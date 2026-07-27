@@ -1,5 +1,6 @@
 """Colab Client — A Python SDK that turns Google Colab into a remote compute runtime."""
 
+from colab._app import App
 from colab._engine import ExecutionEngine
 from colab._exceptions import (
     AnalysisError,
@@ -13,6 +14,7 @@ from colab._exceptions import (
     SessionGpuMismatchError,
     ValidationError,
 )
+from colab._function import RemoteFunction
 from colab._protocol import (
     ErrorMessage,
     LogMessage,
