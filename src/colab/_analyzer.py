@@ -78,27 +78,36 @@ class Analyzer:
         self._warnings.clear()
         self._external_imports.clear()
 
+        source = source_file.resolve()
+
+        if not source.exists():
+            raise AnalysisError(f"Source file not found: {source}")
+        if source.suffix != ".py":
+            raise AnalysisError(f"Expected a .py file, got: {source}")
+
         # Temporarily add the project root to sys.path so that
         # importlib.util.find_spec() can resolve local modules even
-        # in src/ layout projects. Restore on exit.
+        # in src/ layout projects.  Save and restore the full list
+        # so there is zero risk of cross-test pollution.
+        saved_path = sys.path[:]
+        saved_modules = set(sys.modules.keys())
         root_str = str(self._root)
-        added = root_str not in sys.path
-        if added:
+        if root_str not in sys.path:
             sys.path.insert(0, root_str)
 
         try:
-            source = source_file.resolve()
-
-            if not source.exists():
-                raise AnalysisError(f"Source file not found: {source}")
-            if source.suffix != ".py":
-                raise AnalysisError(f"Expected a .py file, got: {source}")
-
             files = self._resolve_recursive(source)
             requirements = sorted(self._external_imports)
         finally:
-            if added:
-                sys.path.remove(root_str)
+            sys.path[:] = saved_path
+            # Remove any modules that were imported during analysis
+            # (e.g. by importlib.util.find_spec for submodule resolution).
+            # This prevents stale ``sys.modules`` entries from causing
+            # ``find_spec`` to return an old spec in a subsequent call
+            # with a different project root.
+            for name in list(sys.modules.keys()):
+                if name not in saved_modules:
+                    del sys.modules[name]
 
         return ExecutionManifest(
             function_name=function_name,
@@ -260,6 +269,13 @@ def _parse_imports(file: Path) -> dict[str, list[str]]:
 
         elif isinstance(node, ast.ImportFrom):
             if node.module is None:
+                # ``from . import foo``, ``from .. import bar``
+                # (relative import with no explicit module)
+                if node.level >= 1:
+                    for alias in node.names:
+                        if alias.name != "*":
+                            dotted = "." * node.level + alias.name
+                            relative.append(dotted)
                 continue
             if node.module.startswith("."):
                 relative.append(node.module)
