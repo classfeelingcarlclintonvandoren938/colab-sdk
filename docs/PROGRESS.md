@@ -114,6 +114,45 @@
 - `93f5b78` — temp file for colab exec probe
 - `3a7da0e` — unit tests for all components + analyzer sys.modules fix
 
+## Session 5 — Protocol, Engine & Full Test Suite
+
+**Date:** 2026-07-27
+
+**Completed:**
+
+### `_protocol.py` — Stdout Protocol Parser
+- `LogMessage`, `ProgressMessage`, `ResultMessage`, `ErrorMessage` frozen dataclasses
+- `parse_line(line)` → parses a single `__LAZY_*`-prefixed line into a structured message
+- `classify(lines)` → streaming generator that yields log/progress messages in real-time
+  and **returns** `ResultMessage` or raises `RemoteExecutionError` when the terminal marker
+  is encountered (uses `StopIteration.value` pattern)
+- Handles: `__LAZY_LOG__`, `__LAZY_PROGRESS__` (0-100 clamped), `__LAZY_RESULT__` (JSON),
+  `__LAZY_ERROR__` (JSON with traceback), unrecognized prefixes (stderr warning)
+- Protocol errors raise `ProtocolError`, remote errors raise `RemoteExecutionError`
+
+### `_engine.py` — ExecutionEngine Orchestrator
+- Dependency injection: `ExecutionEngine(analyzer, packager, session)`
+- `execute(function_name, source_file, args, kwargs, secrets, session_name, gpu) → Any`
+- Pipeline: `validate → analyze → package → prepare_session → execute_with_retry`
+- **GPU validation**: rejects unknown GPU types with `ValidationError` (fail-fast)
+- **Transient retry**: up to 3 attempts with exponential backoff for `prepare_session`
+  (excludes `SessionGpuMismatchError` and `AuthError` — those raise immediately)
+- **Session-dead retry**: recreates session and retries execution once
+- All component exceptions propagate with correct SDK error types
+
+### Tests
+- `test_protocol.py` — 23 tests covering parse_line (all message types, clamping, malformed
+  JSON, empty stream) and classify (result, error, logs, progress, generator return value)
+- `test_engine.py` — 18 tests covering construction, validation, prepare_session,
+  execute_and_parse, retry logic, and the full pipeline
+
+**Total: 99 tests, all passing** (lint + mypy clean across all source files)
+
+### Commit Hashes
+- `c4849d8` — `_protocol.py`
+- `99ebf3d` — `_engine.py`
+- `7a3665e` — `test_protocol.py` + `test_engine.py`
+
 ## Next Session — Ready to Implement
 
 **Priority order:**
@@ -124,9 +163,9 @@
 3. ✅ `Analyzer` component (AST-based import resolution)
 4. ✅ `Packager` component (runner.py + deterministic tar.gz artifact)
 5. ✅ `ColabSession` component (google-colab-cli wrapper via subprocess)
-6. `_protocol.py` + `ExecutionEngine` (stdout parser + pipeline orchestration)
-7. `App` + `RemoteFunction` (SDK entry point, decorator)
-8. `test_protocol.py` + `test_engine.py`
+6. ✅ `_protocol.py` + `ExecutionEngine` (stdout parser + pipeline orchestration)
+7. ✅ `test_protocol.py` + `test_engine.py`
+8. `App` + `RemoteFunction` (SDK entry point, decorator)
 9. Manual Colab integration test
 
 ## Known Decisions (not to be reopened)
