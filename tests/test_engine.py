@@ -33,18 +33,6 @@ def mock_analyzer() -> MagicMock:
 
 
 @pytest.fixture
-def mock_packager() -> MagicMock:
-    """Mock ``Packager`` returning a canned artifact."""
-    mock = MagicMock()
-    artifact = MagicMock()
-    artifact.path = Path("/tmp/cached/abc.tar.gz")
-    artifact.hash = "def456"
-    artifact.size = 1024
-    mock.build.return_value = artifact
-    return mock
-
-
-@pytest.fixture
 def mock_session() -> MagicMock:
     """Mock ``ColabSession`` with no-op methods."""
     mock = MagicMock()
@@ -55,13 +43,11 @@ def mock_session() -> MagicMock:
 @pytest.fixture
 def engine(
     mock_analyzer: MagicMock,
-    mock_packager: MagicMock,
     mock_session: MagicMock,
 ) -> ExecutionEngine:
     """Create an ``ExecutionEngine`` with all mocked components."""
     return ExecutionEngine(
         analyzer=mock_analyzer,
-        packager=mock_packager,
         session=mock_session,
     )
 
@@ -77,13 +63,11 @@ class TestConstruction:
     def test_creates_with_components(
         self,
         mock_analyzer: MagicMock,
-        mock_packager: MagicMock,
         mock_session: MagicMock,
     ) -> None:
         """Engine stores injected components."""
-        eng = ExecutionEngine(mock_analyzer, mock_packager, mock_session)
+        eng = ExecutionEngine(mock_analyzer, mock_session)
         assert eng._analyzer is mock_analyzer
-        assert eng._packager is mock_packager
         assert eng._session is mock_session
 
 
@@ -306,7 +290,6 @@ class TestExecute:
         self,
         engine: ExecutionEngine,
         mock_analyzer: MagicMock,
-        mock_packager: MagicMock,
         mock_session: MagicMock,
     ) -> None:
         """Full pipeline succeeds with valid inputs."""
@@ -331,7 +314,6 @@ class TestExecute:
 
         # Verify each step was called
         mock_analyzer.analyze.assert_called_once_with("train", Path("app.py"))
-        mock_packager.build.assert_called_once()
         mock_session.ensure_session.assert_called_once_with("my-session", "T4")
         mock_session.run_code.assert_called_once()
         # No upload should happen

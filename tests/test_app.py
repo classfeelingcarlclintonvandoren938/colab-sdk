@@ -32,7 +32,6 @@ def _mock_app_components() -> Iterator[None]:
     """
     with patch("colab._app.ColabSession") as mock_session_cls, \
          patch("colab._app.Analyzer"), \
-         patch("colab._app.Packager"), \
          patch("colab._app.ExecutionEngine"):
         # Make ColabSession() return a MagicMock so app._session works
         mock_session_cls.return_value = MagicMock()

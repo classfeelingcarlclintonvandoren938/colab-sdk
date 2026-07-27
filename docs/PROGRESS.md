@@ -165,7 +165,7 @@
 5. ✅ `ColabSession` component (google-colab-cli wrapper via subprocess)
 6. ✅ `_protocol.py` + `ExecutionEngine` (stdout parser + pipeline orchestration)
 7. ✅ `test_protocol.py` + `test_engine.py`
-8. `App` + `RemoteFunction` (SDK entry point, decorator)
+8. ✅ `App` + `RemoteFunction` (SDK entry point, decorator)
 9. Manual Colab integration test
 
 ## Known Decisions (not to be reopened)

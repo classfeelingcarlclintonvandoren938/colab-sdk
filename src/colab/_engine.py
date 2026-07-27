@@ -1,11 +1,11 @@
 """Execution pipeline orchestrator for Colab Client.
 
-Ties the ``Analyzer``, ``Packager``, ``ColabSession``, and protocol parser
+Ties the ``Analyzer``, ``ColabSession``, and protocol parser
 together into a single ``execute()`` call.
 
 Usage::
 
-    engine = ExecutionEngine(analyzer, packager, session)
+    engine = ExecutionEngine(analyzer, session)
     result = engine.execute(
         function_name="train",
         source_file=Path("app.py"),
@@ -33,7 +33,7 @@ from colab._exceptions import (
     ValidationError,
 )
 from colab._manifest import ExecutionManifest
-from colab._packager import Packager, _entry_point_to_module
+from colab._packager import _entry_point_to_module
 from colab._protocol import LogMessage, ProgressMessage, ResultMessage, classify
 from colab._session import ColabSession
 
@@ -65,25 +65,22 @@ class ExecutionEngine:
 
     Usage::
 
-        engine = ExecutionEngine(analyzer, packager, session)
+        engine = ExecutionEngine(analyzer, session)
         result = engine.execute("train", Path("app.py"))
     """
 
     def __init__(
         self,
         analyzer: Analyzer,
-        packager: Packager,
         session: ColabSession,
     ) -> None:
-        """Initialise the engine with its three core components.
+        """Initialise the engine with its two core components.
 
         Args:
             analyzer: Static dependency analyser.
-            packager: Deterministic artifact packager.
             session: Colab CLI session wrapper.
         """
         self._analyzer = analyzer
-        self._packager = packager
         self._session = session
 
     # ------------------------------------------------------------------
@@ -139,10 +136,7 @@ class ExecutionEngine:
         # Step 2: Analyse
         manifest = self._analyzer.analyze(function_name, source_file)
 
-        # Step 3: Build artifact (for deterministic tracking, not uploaded)
-        self._packager.build(manifest, args, kwargs, secrets)
-
-        # Steps 4-5: Session management (with retry for transient failures)
+        # Step 3: Session management (with retry for transient failures)
         for attempt in range(_MAX_TRANSIENT_RETRIES):
             try:
                 self._prepare_session(

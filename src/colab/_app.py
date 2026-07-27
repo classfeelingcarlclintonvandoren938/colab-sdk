@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any, Callable, overload
 from colab._analyzer import Analyzer
 from colab._engine import ExecutionEngine
 from colab._exceptions import ValidationError
-from colab._packager import Packager
 from colab._session import ColabSession
 
 if TYPE_CHECKING:
@@ -98,11 +97,9 @@ class App:
             project_root=project_root,
             exclude_packages=frozenset({"colab"}),
         )
-        self._packager = Packager()
         self._session = ColabSession()
         self._engine = ExecutionEngine(
             analyzer=self._analyzer,
-            packager=self._packager,
             session=self._session,
         )
 
